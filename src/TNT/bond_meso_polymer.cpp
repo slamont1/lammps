@@ -80,25 +80,26 @@ double BondMESOPolymer::store_bond(int n, int i, int j)
   }
 
   // Initialize lengths and weights
-  double *Nlist, *Wlist;
-  Wsum = 0;
+  int NN;
+  double WW;
+  Wsum = 0.0;
   for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
-    Nlist[ii] = ii+Nmin[type];
-    Wlist[ii] = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-Nlist[ii])/(Nmean[type]-Nmin[type]+1);
-    Wsum += Wlist[ii];
-  }
-  for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
-    Wlist[ii] /= Wsum;
+    NN = ii+Nmin[type];
+    WW = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-NN)/(Nmean[type]-Nmin[type]+1);
+    Wsum += WW;
   }
 
   // Determine bond length based on weights
   rnum = random->uniform();
   for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
-    if (rnum < Wlist[ii]) break;
-    rnum -= Wlist[ii];
+    NN = ii+Nmin[type];
+    WW = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-NN)/(Nmean[type]-Nmin[type]+1);
+    WW /= Wsum;
+    if (rnum < WW) break;
+    rnum -= WW;
   }
 
-  N = Nlist[ii];
+  N = NN;
   bondstore[n][0] = N;
 
   if (i < atom->nlocal) {
@@ -122,8 +123,8 @@ double BondMESOPolymer::store_bond(int n, int i, int j)
 
 void BondMESOPolymer::store_data()
 {
-  double Wsum, rnum;
-  int ii, jj, i, j, m, type, N;
+  double Wsum, rnum, WW;
+  int ii, jj, i, j, m, type, N, NN;
   int **bond_type = atom->bond_type;
 
   for (ii = 0; ii < atom->nlocal; ii++) {
@@ -138,25 +139,24 @@ void BondMESOPolymer::store_data()
       if (jj == -1) error->one(FLERR, "Atom missing in MESO bond");
 
       // Initialize lengths and weights
-      double *Nlist, *Wlist;
-      Wsum = 0;
-      for (i = 0; i < (Nmax[type]-Nmin[type]); i++) {
-        Nlist[i] = i+Nmin[type];
-        Wlist[i] = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-Nlist[i])/(Nmean[type]-Nmin[type]+1);
-        Wsum += Wlist[i];
-      }
-      for (i = 0; i < (Nmax[type]-Nmin[type]); i++) {
-        Wlist[i] /= Wsum;
+      Wsum = 0.0;
+      for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
+        NN = ii+Nmin[type];
+        WW = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-NN)/(Nmean[type]-Nmin[type]+1);
+        Wsum += WW;
       }
 
       // Determine bond length based on weights
       rnum = random->uniform();
-      for (i = 0; i < (Nmax[type]-Nmin[type]); i++) {
-        if (rnum < Wlist[i]) break;
-        rnum -= Wlist[i];
+      for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
+        NN = ii+Nmin[type];
+        WW = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-NN)/(Nmean[type]-Nmin[type]+1);
+        WW /= Wsum;
+        if (rnum < WW) break;
+        rnum -= WW;
       }
 
-      N = Nlist[i];
+      N = NN;
 
       fix_bond_history->update_atom_value(ii, m, 0, N);
     }
@@ -291,7 +291,7 @@ void BondMESOPolymer::allocate()
 
 void BondMESOPolymer::coeff(int narg, char **arg)
 {
-  if (narg != 4) error->all(FLERR, "Incorrect args for bond coefficients");
+  if (narg != 7) error->all(FLERR, "Incorrect args for bond coefficients");
   if (!allocated) allocate();
 
   int ilo, ihi;

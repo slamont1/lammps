@@ -69,7 +69,7 @@ BondMESOPolymer::~BondMESOPolymer()
 
 double BondMESOPolymer::store_bond(int n, int i, int j)
 {
-  int i, j, m, N, type;
+  int ii, jj, m, N, type;
   double **bondstore = fix_bond_history->bondstore;
   double Wsum,rnum;
   tagint *tag = atom->tag;
@@ -82,23 +82,23 @@ double BondMESOPolymer::store_bond(int n, int i, int j)
   // Initialize lengths and weights
   double *Nlist, *Wlist;
   Wsum = 0;
-  for (i = 0; i < (Nmax[type]-Nmin[type]); i++) {
-    Nlist[i] = i+Nmin[type];
-    Wlist[i] = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-Nlist[i])/(Nmean[type]-Nmin[type]+1);
-    Wsum += Wlist[i];
+  for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
+    Nlist[ii] = ii+Nmin[type];
+    Wlist[ii] = pow(1.0+1.0/(Nmean[type]-Nmin[type]),Nmin[type]-Nlist[ii])/(Nmean[type]-Nmin[type]+1);
+    Wsum += Wlist[ii];
   }
-  for (i = 0; i < (Nmax[type]-Nmin[type]); i++) {
-    Wlist[i] /= Wsum;
+  for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
+    Wlist[ii] /= Wsum;
   }
 
   // Determine bond length based on weights
   rnum = random->uniform();
-  for (i = 0; i < (Nmax[type]-Nmin[type]); i++) {
-    if (rnum < Wlist[i]) break;
-    rnum -= Wlist[i];
+  for (ii = 0; ii < (Nmax[type]-Nmin[type]); ii++) {
+    if (rnum < Wlist[ii]) break;
+    rnum -= Wlist[ii];
   }
 
-  N = Nlist[i];
+  N = Nlist[ii];
   bondstore[n][0] = N;
 
   if (i < atom->nlocal) {
@@ -298,9 +298,9 @@ void BondMESOPolymer::coeff(int narg, char **arg)
   utils::bounds(FLERR, arg[0], 1, atom->nbondtypes, ilo, ihi, error);
 
   double b_one = utils::numeric(FLERR, arg[1], false, lmp);
-  int Nmean = utils::inumeric(FLERR, arg[2], false, lmp);
-  int Nmin = utils::inumeric(FLERR, arg[3], false, lmp);
-  int Nmax = utils::inumeric(FLERR, arg[4], false, lmp);
+  int Nmean_one = utils::inumeric(FLERR, arg[2], false, lmp);
+  int Nmin_one = utils::inumeric(FLERR, arg[3], false, lmp);
+  int Nmax_one = utils::inumeric(FLERR, arg[4], false, lmp);
   double lamcrit_one = utils::numeric(FLERR, arg[5], false, lmp);
   double gamma_one = utils::numeric(FLERR, arg[6], false, lmp);
 
@@ -466,7 +466,7 @@ double BondMESOPolymer::single(int type, double rsq, int i, int j, double &fforc
 
   // set single_extra quantities
 
-  svector[0] = r0;
+  svector[0] = N;
 
   return k*r*r*0.5;
 }

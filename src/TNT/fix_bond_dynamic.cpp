@@ -14,24 +14,25 @@
 
 #include "fix_bond_dynamic.h"
 
-#include <cstring>
-#include "update.h"
-#include "respa.h"
 #include "atom.h"
-#include "force.h"
-#include "pair.h"
+#include "bond.h"
 #include "comm.h"
 #include "domain.h"
-#include "neighbor.h"
-#include "bond.h"
-#include "neigh_list.h"
-#include "neigh_request.h"
-#include "random_mars.h"
+#include "error.h"
+#include "force.h"
+#include "group.h"
 #include "memory.h"
 #include "modify.h"
-#include "group.h"
-#include "error.h"
+#include "neighbor.h"
+#include "neigh_list.h"
+#include "neigh_request.h"
+#include "pair.h"
+#include "respa.h"
+#include "update.h"
+
+#include <cstring>
 #include "math_const.h"
+#include "random_mars.h"
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -224,7 +225,7 @@ void FixBondDynamic::post_constructor()
   modify->add_fix(fmt::format("{} {} property/atom i2_fbd_{} {} ghost yes",new_fix_id, group->names[igroup],id,std::to_string(maxbond)));
 
   int tmp1, tmp2;
-  index = atom->find_custom(utils::strdup(std::string("fbd_") + id),tmp1,tmp2);
+  index = atom->find_custom(utils::strdup(std::string("fbd_")+id),tmp1,tmp2);
 
   nmax = atom->nmax;
 
@@ -340,6 +341,9 @@ void FixBondDynamic::post_integrate()
   int *num_bond = atom->num_bond;
   int **bond_type = atom->bond_type;
   tagint **bond_atom = atom->bond_atom;
+
+  int **nspecial = atom->nspecial;
+  tagint **special = atom->special;
 
   if (update->ntimestep % nevery) return;
 
@@ -546,6 +550,11 @@ void FixBondDynamic::post_integrate()
           break;
         }
       }
+      if (done) continue;
+
+      // check duplicate via 1-2 neighbors
+      for (b = 0; b < nspecial[i][0]; b++)
+        if (special[i][b] == tag[j]) done = 1;
       if (done) continue;
 
       // check if this ghost atom was already seen

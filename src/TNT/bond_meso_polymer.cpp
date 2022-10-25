@@ -231,7 +231,11 @@ void BondMESOPolymer::compute(int eflag, int vflag)
     // }
 
     rinv = 1.0 / r;
-    fbond = -k*r;
+
+    if (r > 0.0)
+      fbond = -k*r;
+    else
+      fbond = 0.0;
 
     if (eflag) ebond = k*r*r*0.5;
 
@@ -441,7 +445,10 @@ double BondMESOPolymer::single(int type, double rsq, int i, int j, double &fforc
 
   double lam = r/N/b[type];
   double k   = 3.0/N/b[type]/b[type];
-  fforce = -k*r;
+
+  // Force computation
+  fforce = 0.0;
+  if (r > 0.0) fforce = -k*r;
 
   double **x = atom->x;
   double **v = atom->v;

@@ -79,6 +79,7 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
   flag_bell = 0;
   flag_rouse = 0;
   flag_critical = 0;
+  flag_mol = 0;
   prob_attach = 0.0;
   prob_detach = 0.0;
   maxbond = atom->bond_per_atom;
@@ -128,6 +129,10 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
     } else if (strcmp(arg[iarg],"jtype") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
       jatomtype = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
+      iarg += 2;
+    } else if (strcmp(arg[iarg],"mol") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
+      flag_mol = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       iarg += 2;
     } else error->all(FLERR,"Illegal fix bond/dynamic command");
   }
@@ -513,6 +518,7 @@ void FixBondDynamic::post_integrate()
   ilist = list->ilist;
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
+  tagint *molecule = atom->molecule;
 
   // find potential bonding partners
 
@@ -539,6 +545,10 @@ void FixBondDynamic::post_integrate()
       if (!(type[j] == jatomtype)) continue;
       if (npos[j] == 0) continue;
       if (tag[i] == tag[j]) continue;
+
+      if (flag_mol) {
+        if (molecule[i] == molecule[j]) continue;
+      }
 
       // do not allow a duplicate bond to be created
       // check fbd matrix of atom i

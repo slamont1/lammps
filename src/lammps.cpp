@@ -130,6 +130,7 @@ LAMMPS::LAMMPS(int narg, char **arg, MPI_Comm communicator) :
 
   version = (const char *) LAMMPS_VERSION;
   num_ver = utils::date2num(version);
+  restart_ver = -1;
 
   external_comm = 0;
   mdicomm = nullptr;
@@ -526,7 +527,7 @@ LAMMPS::LAMMPS(int narg, char **arg, MPI_Comm communicator) :
      // warn against using I/O redirection in parallel runs
       if ((inflag == 0) && (universe->nprocs > 1))
         error->warning(FLERR, "Using I/O redirection is unreliable with parallel runs. "
-                       "Better use -in switch to read input file.");
+                       "Better to use the -in switch to read input files.");
       utils::flush_buffers(this);
     }
 
@@ -993,6 +994,8 @@ void LAMMPS::destroy()
 
   delete python;
   python = nullptr;
+
+  restart_ver = -1;       // reset last restart version id
 }
 
 /* ----------------------------------------------------------------------

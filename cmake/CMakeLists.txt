@@ -266,6 +266,7 @@ set(STANDARD_PACKAGES
   ML-QUIP
   ML-RANN
   ML-SNAP
+  ML-POD
   MOFFF
   MOLECULE
   MOLFILE
@@ -317,6 +318,15 @@ if(PKG_ADIOS)
   # script that defines the MPI::MPI_C target
   enable_language(C)
   find_package(ADIOS2 REQUIRED)
+  if(BUILD_MPI)
+    if(NOT ADIOS2_HAVE_MPI)
+      message(FATAL_ERROR "ADIOS2 must be built with MPI support when LAMMPS has MPI enabled")
+    endif()
+  else()
+    if(ADIOS2_HAVE_MPI)
+      message(FATAL_ERROR "ADIOS2 must be built without MPI support when LAMMPS has MPI disabled")
+    endif()
+  endif()
   target_link_libraries(lammps PRIVATE adios2::adios2)
 endif()
 
@@ -424,7 +434,7 @@ if(BUILD_OMP)
   target_link_libraries(lmp PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-if(PKG_MSCG OR PKG_ATC OR PKG_AWPMD OR PKG_ML-QUIP OR PKG_LATTE OR PKG_ELECTRODE)
+if(PKG_MSCG OR PKG_ATC OR PKG_AWPMD OR PKG_ML-QUIP OR PKG_ML-POD OR PKG_LATTE OR PKG_ELECTRODE)
   enable_language(C)
   if (NOT USE_INTERNAL_LINALG)
     find_package(LAPACK)
@@ -630,7 +640,7 @@ foreach(PKG_LIB POEMS ATC AWPMD H5MD MESONT)
   endif()
 endforeach()
 
-if(PKG_ELECTRODE)
+if(PKG_ELECTRODE OR PKG_ML-POD)
   target_link_libraries(lammps PRIVATE ${LAPACK_LIBRARIES})
 endif()
 
@@ -659,7 +669,7 @@ endif()
 # packages which selectively include variants based on enabled styles
 # e.g. accelerator packages
 ######################################################################
-foreach(PKG_WITH_INCL CORESHELL DPD-SMOOTH MISC PHONON QEQ OPENMP KOKKOS OPT INTEL GPU)
+foreach(PKG_WITH_INCL CORESHELL DPD-SMOOTH MC MISC PHONON QEQ OPENMP KOKKOS OPT INTEL GPU)
   if(PKG_${PKG_WITH_INCL})
     include(Packages/${PKG_WITH_INCL})
   endif()

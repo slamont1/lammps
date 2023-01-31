@@ -33,6 +33,8 @@ Syntax
          prob_attach = create a bond with this probability if otherwise eligible
          prob_detach = delete a bond with this probability if otherwise eligible
          seed = random number seed (positive integer)
+        *critical* values = length_critical
+         length_critical = critical length after which a bond permanently breaks
 
 Examples
 """"""""
@@ -108,7 +110,12 @@ where *k_a,0* is the user-input *ka*, *b* is user-defined reference length defin
 
 If the *prob* keyword is used, the rates *ka* and *kd* are not considered. Instead,
 each creation and deletion event is considered with probabilities *prob_attach* and
-*prob_detach*, respectively. 
+*prob_detach*, respectively.
+
+If the *critical* keywork is used, bonds are deleted once they have reached a length of
+*length_critical*. The maximum number of bonds in the atoms storing this bond will be 
+decreased by one, ensuring irreversible breaking. This is akin to breaking polymer chains
+by scission.
 
 Any bond that is created is assigned a bond type of *bondtype*. When a bond is created, 
 data structures within LAMMPS that store bond topology are updated to reflect the

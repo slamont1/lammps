@@ -19,7 +19,7 @@ Syntax
 * kd = reverse kinetic rate of bond deletion (inverse time units)
 * cutoff = 2 atoms separated by less than cutoff can bond (distance units)
 * zero or more keyword/value pairs may be appended to args
-* keyword = *maxbond* or *bell* or *rouse* or *prob*
+* keyword = *maxbond* or *bell* or *rouse* or *prob* or *critical*
 
   .. parsed-literal::
 

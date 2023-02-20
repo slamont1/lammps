@@ -13,21 +13,21 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(bond/dynamic,FixBondDynamic);
+FixStyle(bond/rupture,FixBondRupture);
 // clang-format on
 #else
 
-#ifndef LMP_FIX_BOND_DYNAMIC_H
-#define LMP_FIX_BOND_DYNAMIC_H
+#ifndef LMP_FIX_BOND_RUPTURE_H
+#define LMP_FIX_BOND_RUPTURE_H
 
 #include "fix.h"
 
 namespace LAMMPS_NS {
 
-class FixBondDynamic : public Fix {
+class FixBondRupture : public Fix {
  public:
-  FixBondDynamic(class LAMMPS *, int, char **);
-  virtual ~FixBondDynamic();
+  FixBondRupture(class LAMMPS *, int, char **);
+  virtual ~FixBondRupture();
   int setmask();
   void post_constructor();
   void init();
@@ -43,11 +43,10 @@ class FixBondDynamic : public Fix {
  protected:
   int me, nprocs;
   int iatomtype,jatomtype;
-  int atype, btype, seed;
+  int atype, btype;
   int imaxbond, jmaxbond, maxbond;
-  double cutsq, prob_attach, prob_detach, f0, ka, kd, DT_EQ;
-  double ka0, kd0, b0, b2, r_critical, r2_critical;
-  int flag_bell, flag_prob, flag_rouse, flag_critical, flag_mol, flag_skip;
+  double r_critical, r2_critical;
+  int flag_mol, flag_skip;
   int skip;
 
   int overflow;
@@ -55,38 +54,19 @@ class FixBondDynamic : public Fix {
   int size_bonds_and_neighbors;
   int size_bond_lists;
 
-  int *bondcount;
-  int createcount, createcounttotal;
-  int breakcount, breakcounttotal;
   int nmax;
-  tagint *partner, *finalpartner;
-  double *distsq, probability, *probabilities;
-  double cutoff;
-  int **broken_partners;
-  double **partners_probs, **partners_probs_f;
-  int *npos, *influenced;
-  int **partners_success;
-
-  tagint **partners_possible, **partners_possible_f;
-
-  int nbreak, maxbreak;
-  int ncreate, maxcreate;
-  tagint **created;
-  tagint **broken;
+  int *influenced;
 
   tagint *copy;
 
-  class RanMars *random;
   class NeighList *list;
 
   int prop_atom_flag, nvalues, overlay_flag;
 
   int countflag, commflag;
   int nlevels_respa;
-  int nangles, ndihedrals, nimpropers;
 
   void process_broken(int, int);
-  void process_created(int, int);
   void rebuild_special_one(int);
 
   int dedup(int, int, tagint *);

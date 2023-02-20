@@ -80,6 +80,8 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
   flag_rouse = 0;
   flag_critical = 0;
   flag_mol = 0;
+  flag_skip = 0;
+  skip = 0;
   prob_attach = 0.0;
   prob_detach = 0.0;
   maxbond = atom->bond_per_atom;
@@ -133,6 +135,11 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
     } else if (strcmp(arg[iarg],"mol") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
       flag_mol = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
+      iarg += 2;
+    } else if (strcmp(arg[iarg],"skip") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
+      flag_skip = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
+      skip = 1;
       iarg += 2;
     } else error->all(FLERR,"Illegal fix bond/dynamic command");
   }
@@ -306,9 +313,9 @@ void FixBondDynamic::setup(int /*vflag*/)
   for (i = 0; i < nlocal; i++) {
     if (num_bond[i] == 0) continue;
     for (j = 0; j < num_bond[i]; j++) {
-      if (bond_type[i][j] == btype) {
+      // if (bond_type[i][j] == btype) {
         fbd[i][j] = bond_atom[i][j]; // ADD OPTION FOR INCLUDING OUTSIDE ATOMS OR NOT DIRECTLY
-      }
+      // }
     }
   }
 
@@ -351,6 +358,14 @@ void FixBondDynamic::post_integrate()
   tagint **special = atom->special;
 
   if (update->ntimestep % nevery) return;
+  if (flag_skip) {
+    if (skip) {
+      skip = 0;
+      return;
+    } else {
+      skip = 1;
+    }
+  }
 
   // acquire updated ghost atom positions
   // necessary b/c are calling this after integrate, but before Verlet comm

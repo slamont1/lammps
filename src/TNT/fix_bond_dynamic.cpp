@@ -394,7 +394,7 @@ void FixBondDynamic::post_integrate()
     if (!(mask[i] & groupbit)) continue;
     if (!(type[i] == iatomtype)) continue;
 
-    if (flag_critical) {
+    if (flag_critical || flag_bell) {
       xtmp = x[i][0];
       ytmp = x[i][1];
       ztmp = x[i][2];

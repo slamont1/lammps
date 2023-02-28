@@ -347,7 +347,7 @@ void FixBondDynamic::post_integrate()
   int nall = nlocal + nghost;
 
   int tmp1, tmp2;
-  // index = atom->find_custom(utils::strdup(std::string("fbd_") + MYID),tmp1,tmp2);
+  index = atom->find_custom(utils::strdup(std::string("fbd_") + MYID),tmp1,tmp2);
   tagint **fbd = atom->iarray[index];
 
   int *num_bond = atom->num_bond;
@@ -358,14 +358,6 @@ void FixBondDynamic::post_integrate()
   tagint **special = atom->special;
 
   if (update->ntimestep % nevery) return;
-  if (flag_skip) {
-    if (skip) {
-      skip = 0;
-      return;
-    } else {
-      skip = 1;
-    }
-  }
 
   // acquire updated ghost atom positions
   // necessary b/c are calling this after integrate, but before Verlet comm
@@ -1190,7 +1182,7 @@ int FixBondDynamic::pack_forward_comm(int n, int *list, double *buf,
   if (commflag == 1) {
       int tmp1, tmp2;
       index = atom->find_custom(utils::strdup(std::string("fbd_") + id),tmp1,tmp2);
-      int **fbd = atom->iarray[index];
+      tagint **fbd = atom->iarray[index];
 
       for (i = 0; i < n; i++) {
         j = list[i];
@@ -1273,7 +1265,7 @@ void FixBondDynamic::unpack_forward_comm(int n, int first, double *buf)
   if (commflag == 1) {
     int tmp1, tmp2;
     index = atom->find_custom(utils::strdup(std::string("fbd_") + id),tmp1,tmp2);
-    int **fbd = atom->iarray[index];
+    tagint **fbd = atom->iarray[index];
 
     for (i = first; i < last; i++) {
         for (j = 0; j < maxbond; j++) {

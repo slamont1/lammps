@@ -300,7 +300,7 @@ void FixBondDynamic::setup(int /*vflag*/)
   //   >0: atom->tag of bonded atom
 
   int tmp1, tmp2;
-  // index = atom->find_custom(utils::strdup(std::string("fbd_") + MYID),tmp1,tmp2);
+  index = atom->find_custom(utils::strdup(std::string("fbd_")+id),tmp1,tmp2);
   tagint **fbd = atom->iarray[index];
 
   int *num_bond = atom->num_bond;
@@ -347,7 +347,7 @@ void FixBondDynamic::post_integrate()
   int nall = nlocal + nghost;
 
   int tmp1, tmp2;
-  index = atom->find_custom(utils::strdup(std::string("fbd_") + MYID),tmp1,tmp2);
+  index = atom->find_custom(utils::strdup(std::string("fbd_")+id),tmp1,tmp2);
   tagint **fbd = atom->iarray[index];
 
   int *num_bond = atom->num_bond;

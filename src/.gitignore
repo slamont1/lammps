@@ -62,6 +62,8 @@
 /angle_lepton.h
 /dihedral_lepton.cpp
 /dihedral_lepton.h
+/fix_wall_lepton.cpp
+/fix_wall_lepton.h
 /lepton_utils.cpp
 /lepton_utils.h
 
@@ -490,6 +492,8 @@
 /bond_gromos.h
 /bond_harmonic.cpp
 /bond_harmonic.h
+/bond_harmonic_restrain.cpp
+/bond_harmonic_restrain.h
 /bond_harmonic_shift.cpp
 /bond_harmonic_shift.h
 /bond_harmonic_shift_cut.cpp

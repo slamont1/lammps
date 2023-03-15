@@ -30,11 +30,9 @@ using namespace LAMMPS_NS;
 /* ---------------------------------------------------------------------- */
 
 BondMESOSpring::BondMESOSpring(LAMMPS *_lmp) :
-    BondMESO(_lmp), b(nullptr), lamcrit(nullptr), gamma(nullptr)
+    BondMESO(_lmp), Kstiff(nullptr)
 {
   partial_flag = 1;
-  smooth_flag = 1;
-
   single_extra = 1;
   svector = new double[1];
 }
@@ -47,9 +45,7 @@ BondMESOSpring::~BondMESOSpring()
 
   if (allocated) {
     memory->destroy(setflag);
-    memory->destroy(b);
-    memory->destroy(lamcrit);
-    memory->destroy(gamma);
+    memory->destroy(Kstiff);
   }
 }
 
@@ -68,7 +64,7 @@ double BondMESOSpring::store_bond(int n, int i, int j)
   dely = x[i][1] - x[j][1];
   delz = x[i][2] - x[j][2];
 
-  // Bond stores initial length - this will be sqrt{N}b
+  // Bond stores initial length
   r = sqrt(delx * delx + dely * dely + delz * delz);
   bondstore[n][0] = r;
 
@@ -137,11 +133,12 @@ void BondMESOSpring::compute(int eflag, int vflag)
   int i1, i2, itmp, n, type;
   double delx, dely, delz, delvx, delvy, delvz;
   double lam, rsq, r, r0, rinv, smooth, fbond, dot, k, N, ebond;
+  double dr, rk;
 
+  ebond = 0.0;
   ev_init(eflag, vflag);
 
   double **x = atom->x;
-  double **v = atom->v;
   double **f = atom->f;
   tagint *tag = atom->tag;
   int **bondlist = neighbor->bondlist;
@@ -152,9 +149,6 @@ void BondMESOSpring::compute(int eflag, int vflag)
   double **bondstore = fix_bond_history->bondstore;
 
   for (n = 0; n < nbondlist; n++) {
-
-    // skip bond if already broken
-    if (bondlist[n][2] <= 0) continue;
 
     i1 = bondlist[n][0];
     i2 = bondlist[n][1];
@@ -171,45 +165,19 @@ void BondMESOSpring::compute(int eflag, int vflag)
     // If bond hasn't been set - should be initialized
     if (r0 < EPSILON || std::isnan(r0)) r0 = store_bond(n, i1, i2);
 
-    N  = pow(r0/b[type],2.0);
-    k  = 3.0/N/b[type]/b[type];
-    lam = r/N/b[type];
+    dr = r - r0;
+    rk = Kstiff[type] * dr;
 
-    // Ensure pair is always ordered to ensure numerical operations
-    // are identical to minimize the possibility that a bond straddling
-    // an mpi grid (newton off) doesn't break on one proc but not the other
-    if (tag[i2] < tag[i1]) {
-      itmp = i1;
-      i1 = i2;
-      i2 = itmp;
-    }
+    // force & energy
 
-    // if (lam > lamcrit[type]) {
-    //   bondlist[n][2] = 0;
-    //   process_broken(i1, i2);
-    //   continue;
-    // }
+    if (r > 0.0)
+      fbond = -2.0 * rk / r;
+    else
+      fbond = 0.0;
 
-    rinv = 1.0 / r;
-    fbond = -k*r;
+    if (eflag) ebond = rk * dr;
 
-    if (eflag) ebond = k*r*r*0.5;
-
-    delvx = v[i1][0] - v[i2][0];
-    delvy = v[i1][1] - v[i2][1];
-    delvz = v[i1][2] - v[i2][2];
-    dot = delx * delvx + dely * delvy + delz * delvz;
-    // fbond -= gamma[type] * dot * rinv;
-    // fbond *= rinv;
-
-    // if (smooth_flag) {
-    //   smooth = (lam) / (lamcrit[type]);
-    //   smooth *= smooth;
-    //   smooth *= smooth;
-    //   smooth *= smooth;
-    //   smooth = 1 - smooth;
-    //   fbond *= smooth;
-    // }
+    // apply force to each of 2 atoms
 
     if (newton_bond || i1 < nlocal) {
       f[i1][0] += delx * fbond;
@@ -234,10 +202,7 @@ void BondMESOSpring::allocate()
   allocated = 1;
   const int np1 = atom->nbondtypes + 1;
 
-  memory->create(b, np1, "bond:b");
-  memory->create(lamcrit, np1, "bond:lamcrit");
-  memory->create(gamma, np1, "bond:gamma");
-
+  memory->create(Kstiff, np1, "bond:Kstiff");
   memory->create(setflag, np1, "bond:setflag");
   for (int i = 1; i < np1; i++) setflag[i] = 0;
 }
@@ -248,25 +213,19 @@ void BondMESOSpring::allocate()
 
 void BondMESOSpring::coeff(int narg, char **arg)
 {
-  if (narg != 4) error->all(FLERR, "Incorrect args for bond coefficients");
+  if (narg != 2) error->all(FLERR, "Incorrect args for bond coefficients");
   if (!allocated) allocate();
 
   int ilo, ihi;
   utils::bounds(FLERR, arg[0], 1, atom->nbondtypes, ilo, ihi, error);
 
-  double b_one = utils::numeric(FLERR, arg[1], false, lmp);
-  double lamcrit_one = utils::numeric(FLERR, arg[2], false, lmp);
-  double gamma_one = utils::numeric(FLERR, arg[3], false, lmp);
+  double Kstiff_one = utils::numeric(FLERR, arg[1], false, lmp);
 
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
-    b[i] = b_one;
-    lamcrit[i] = lamcrit_one;
-    gamma[i] = gamma_one;
+    Kstiff[i] = Kstiff_one;
     setflag[i] = 1;
     count++;
-
-    if (lamcrit[i] > max_stretch) max_stretch = lamcrit[i];
   }
 
   if (count == 0) error->all(FLERR, "Incorrect args for bond coefficients");
@@ -280,9 +239,6 @@ void BondMESOSpring::init_style()
 {
   BondMESO::init_style();
 
-  if (comm->ghost_velocity == 0)
-    error->all(FLERR, "Bond meso/spring requires ghost atoms store velocity");
-
   if (!id_fix_bond_history) {
     id_fix_bond_history = utils::strdup("HISTORY_MESO_SPRING");
     fix_bond_history = dynamic_cast<FixBondHistory *>(modify->replace_fix(
@@ -294,22 +250,22 @@ void BondMESOSpring::init_style()
 
 /* ---------------------------------------------------------------------- */
 
-void BondMESOSpring::settings(int narg, char **arg)
-{
-  BondMESO::settings(narg, arg);
+// void BondMESOSpring::settings(int narg, char **arg)
+// {
+//   BondMESO::settings(narg, arg);
 
-  int iarg;
-  for (std::size_t i = 0; i < leftover_iarg.size(); i++) {
-    iarg = leftover_iarg[i];
-    if (strcmp(arg[iarg], "smooth") == 0) {
-      if (iarg + 1 > narg) error->all(FLERR, "Illegal bond meso command, missing option for smooth");
-      smooth_flag = utils::logical(FLERR, arg[iarg + 1], false, lmp);
-      i += 1;
-    } else {
-      error->all(FLERR, "Illegal bond meso command, invalid argument {}", arg[iarg]);
-    }
-  }
-}
+//   int iarg;
+//   for (std::size_t i = 0; i < leftover_iarg.size(); i++) {
+//     iarg = leftover_iarg[i];
+//     if (strcmp(arg[iarg], "smooth") == 0) {
+//       if (iarg + 1 > narg) error->all(FLERR, "Illegal bond meso command, missing option for smooth");
+//       smooth_flag = utils::logical(FLERR, arg[iarg + 1], false, lmp);
+//       i += 1;
+//     } else {
+//       error->all(FLERR, "Illegal bond meso command, invalid argument {}", arg[iarg]);
+//     }
+//   }
+// }
 
 /* ----------------------------------------------------------------------
    proc 0 writes out coeffs to restart file
@@ -320,9 +276,7 @@ void BondMESOSpring::write_restart(FILE *fp)
   BondMESO::write_restart(fp);
   write_restart_settings(fp);
 
-  fwrite(&b[1], sizeof(double), atom->nbondtypes, fp);
-  fwrite(&lamcrit[1], sizeof(double), atom->nbondtypes, fp);
-  fwrite(&gamma[1], sizeof(double), atom->nbondtypes, fp);
+  fwrite(&Kstiff[1], sizeof(double), atom->nbondtypes, fp);
 }
 
 /* ----------------------------------------------------------------------
@@ -336,13 +290,9 @@ void BondMESOSpring::read_restart(FILE *fp)
   allocate();
 
   if (comm->me == 0) {
-    utils::sfread(FLERR, &b[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
-    utils::sfread(FLERR, &lamcrit[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
-    utils::sfread(FLERR, &gamma[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
+    utils::sfread(FLERR, &Kstiff[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
   }
-  MPI_Bcast(&b[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&lamcrit[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&gamma[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&Kstiff[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
 
   for (int i = 1; i <= atom->nbondtypes; i++) setflag[i] = 1;
 }
@@ -351,27 +301,26 @@ void BondMESOSpring::read_restart(FILE *fp)
    proc 0 writes to restart file
  ------------------------------------------------------------------------- */
 
-void BondMESOSpring::write_restart_settings(FILE *fp)
-{
-  fwrite(&smooth_flag, sizeof(int), 1, fp);
-}
+// void BondMESOSpring::write_restart_settings(FILE *fp)
+// {
+//   fwrite(&Kstiff[1], sizeof(double), atom->nbondtypes, fp);
+// }
 
 /* ----------------------------------------------------------------------
     proc 0 reads from restart file, bcasts
  ------------------------------------------------------------------------- */
 
-void BondMESOSpring::read_restart_settings(FILE *fp)
-{
-  if (comm->me == 0)
-    utils::sfread(FLERR, &smooth_flag, sizeof(int), 1, fp, nullptr, error);
-  MPI_Bcast(&smooth_flag, 1, MPI_INT, 0, world);
-}
+// void BondMESOSpring::read_restart_settings(FILE *fp)
+// {
+//   if (comm->me == 0)
+//     utils::sfread(FLERR, &smooth_flag, sizeof(int), 1, fp, nullptr, error);
+//   MPI_Bcast(&smooth_flag, 1, MPI_INT, 0, world);
+// }
 
 /* ---------------------------------------------------------------------- */
 
 double BondMESOSpring::single(int type, double rsq, int i, int j, double &fforce)
 {
-  if (type <= 0) return 0.0;
 
   double r0;
   for (int n = 0; n < atom->num_bond[i]; n++) {
@@ -379,37 +328,13 @@ double BondMESOSpring::single(int type, double rsq, int i, int j, double &fforce
   }
 
   double r = sqrt(rsq);
-  double rinv = 1.0 / r;
-
-  double N   = pow(r0/b[type],2);
-  double lam = r/N/b[type];
-  double k   = 3.0/N/b[type]/b[type];
-  fforce = -k*r;
-
-  double **x = atom->x;
-  double **v = atom->v;
-  double delx = x[i][0] - x[j][0];
-  double dely = x[i][1] - x[j][1];
-  double delz = x[i][2] - x[j][2];
-  double delvx = v[i][0] - v[j][0];
-  double delvy = v[i][1] - v[j][1];
-  double delvz = v[i][2] - v[j][2];
-  double dot = delx * delvx + dely * delvy + delz * delvz;
-  // fforce -= gamma[type] * dot * rinv;
-  // fforce *= rinv;
-
-  // if (smooth_flag) {
-  //   double smooth = (lam) / (lamcrit[type]);
-  //   smooth *= smooth;
-  //   smooth *= smooth;
-  //   smooth *= smooth;
-  //   smooth = 1 - smooth;
-  //   fforce *= smooth;
-  // }
-
-  // set single_extra quantities
+  double dr = r - r0;
+  double rk = Kstiff[type] * dr;
+  fforce = 0;
+  if (r > 0.0) fforce = -2.0 * rk / r;
+  return rk * dr;
 
   svector[0] = r0;
-
-  return k*r*r*0.5;
+  // fforce = -Kstiff[type]*sqrt(rsq);
+  // return Kstiff[type]*rsq*0.5;
 }

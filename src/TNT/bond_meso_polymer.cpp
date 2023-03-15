@@ -308,6 +308,7 @@ void BondMESOPolymer::coeff(int narg, char **arg)
   double lamcrit_one = utils::numeric(FLERR, arg[5], false, lmp);
   double gamma_one = utils::numeric(FLERR, arg[6], false, lmp);
 
+  double max_stretch = 0;
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
     b[i] = b_one;

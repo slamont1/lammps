@@ -79,6 +79,7 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
   flag_bell = 0;
   flag_rouse = 0;
   flag_critical = 0;
+  flag_crit = 0;
   flag_mol = 0;
   flag_skip = 0;
   skip = 0;
@@ -128,6 +129,12 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
       r2_critical = r_critical*r_critical;
       flag_critical = 1;
       iarg += 2;
+    } else if (strcmp(arg[iarg],"crit") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
+      r_critical = utils::numeric(FLERR,arg[iarg+1],false,lmp);
+      r2_critical = r_critical*r_critical;
+      flag_crit = 1;
+      iarg += 2;
     } else if (strcmp(arg[iarg],"jtype") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
       jatomtype = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
@@ -137,10 +144,10 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
       flag_mol = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       iarg += 2;
     } else if (strcmp(arg[iarg],"skip") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
+      if (iarg+3 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
       flag_skip = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
-      skip = 1;
-      iarg += 2;
+      skip = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
+      iarg += 3;
     } else error->all(FLERR,"Illegal fix bond/dynamic command");
   }
 
@@ -358,6 +365,9 @@ void FixBondDynamic::post_integrate()
   tagint **special = atom->special;
 
   if (update->ntimestep % nevery) return;
+  if (flag_skip) {
+    if (!(update->ntimestep % skip)) return;
+  }
 
   // acquire updated ghost atom positions
   // necessary b/c are calling this after integrate, but before Verlet comm
@@ -380,7 +390,6 @@ void FixBondDynamic::post_integrate()
   // loop over local atoms
   // check for possible breaks
 
-  if (!flag_prob && !flag_bell) prob_detach = 1 - exp(-kd0*DT_EQ);
   for (i = 0; i < nlocal; i++) {
 
     if (!(mask[i] & groupbit)) continue;
@@ -409,6 +418,7 @@ void FixBondDynamic::post_integrate()
 
       probability = random->uniform();
 
+      prob_detach = 1 - exp(-kd0*DT_EQ);
       if (flag_bell) {
         delx = xtmp - x[j][0];
         dely = ytmp - x[j][1];
@@ -529,7 +539,6 @@ void FixBondDynamic::post_integrate()
 
   // find potential bonding partners
 
-  if (!flag_prob && !flag_rouse) prob_attach = 1.0 - exp(-ka0*DT_EQ);
   for (i = 0; i < nlocal; i++) {
 
     if (!(mask[i] & groupbit)) continue;
@@ -594,7 +603,8 @@ void FixBondDynamic::post_integrate()
 
       // Determine probability of attachment
       probability = random->uniform();
-
+      
+      if (!flag_prob) prob_attach = 1.0 - exp(-ka0*DT_EQ);
       if (flag_rouse) {
         ka = ka0*pow(b2/rsq,2);
         prob_attach = 1 - exp(-ka*DT_EQ);

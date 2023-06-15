@@ -87,10 +87,10 @@ FixBondRupturess::FixBondRupturess(LAMMPS *lmp, int narg, char **arg) :
       flag_mol = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       iarg += 2;
     } else if (strcmp(arg[iarg],"skip") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/rupturess command");
+      if (iarg+3 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
       flag_skip = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
-      skip = 1;
-      iarg += 2;
+      skip = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
+      iarg += 3;
     } else error->all(FLERR,"Illegal fix bond/rupturess command");
   }
 
@@ -237,12 +237,7 @@ void FixBondRupturess::post_integrate()
 
   if ((update->ntimestep+1) % nevery) return;
   if (flag_skip) {
-    if (skip) {
-      skip = 0;
-      return;
-    } else {
-      skip = 1;
-    }
+    if (!(update->ntimestep % skip)) return;
   }
 
   // acquire updated ghost atom positions

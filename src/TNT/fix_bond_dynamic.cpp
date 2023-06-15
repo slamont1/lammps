@@ -79,7 +79,6 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
   flag_bell = 0;
   flag_rouse = 0;
   flag_critical = 0;
-  flag_crit = 0;
   flag_mol = 0;
   flag_skip = 0;
   skip = 0;
@@ -128,12 +127,6 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
       r_critical = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       r2_critical = r_critical*r_critical;
       flag_critical = 1;
-      iarg += 2;
-    } else if (strcmp(arg[iarg],"crit") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
-      r_critical = utils::numeric(FLERR,arg[iarg+1],false,lmp);
-      r2_critical = r_critical*r_critical;
-      flag_crit = 1;
       iarg += 2;
     } else if (strcmp(arg[iarg],"jtype") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");

@@ -44,8 +44,8 @@ class FixBondRupturess : public Fix {
   int iatomtype,jatomtype;
   int atype, btype;
   int imaxbond, jmaxbond, maxbond;
-  double r_critical, r2_critical;
-  int flag_mol, flag_skip;
+  double r_critical, r2_critical, f_critical;
+  int flag_mol, flag_skip, flag_fcrit;
   int skip;
 
   int overflow;

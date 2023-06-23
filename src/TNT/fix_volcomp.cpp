@@ -73,7 +73,7 @@ FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
   produced by compute voronoi*/
   
   energy_peratom_flag = 1;
-  virial_peratom_flag = 1;
+  virial_global_flag = virial_peratom_flag = 1;
   thermo_energy = thermo_virial = 1;
 
   respa_level_support = 1;
@@ -728,11 +728,14 @@ void FixVolComp::post_force(int vflag)
   }
 
  /*Cell center based vertex model force calculation*/
-
+  
+  double unwrap[3];
+  double rvec[3];
   for(int i = 0; i < nlocal; i++){
     if (mask[i] & groupbit){
 
     double F_t1[3] = {0.0}; //t1 stands for term 1 in the vertex model force equation which is the area term
+    double vir[6] = {0.0};
 
     for(int j = 0; j < cell_neighs_list[i].size(); j++){
       int current_cell = cell_neighs_list[i][j];
@@ -792,6 +795,18 @@ void FixVolComp::post_force(int vflag)
       F_t1[0] += elasticity_area*vertex_force_sum_t1[0];
       F_t1[1] += elasticity_area*vertex_force_sum_t1[1]; 
       F_t1[2] += elasticity_area*vertex_force_sum_t1[2];
+
+      // Count virial contribution
+      rvec[0] = x[i][0]-x[current_cell][0];
+      rvec[1] = x[i][1]-x[current_cell][1];
+      rvec[2] = x[i][2]-x[current_cell][2];
+      domain->minimum_image(rvec[0], rvec[1], rvec[2]);
+      vir[0]  += (-elasticity_area*vertex_force_sum_t1[0]) * rvec[0];
+      vir[1]  += (-elasticity_area*vertex_force_sum_t1[1]) * rvec[1];
+      vir[2]  += (-elasticity_area*vertex_force_sum_t1[2]) * rvec[2];
+      vir[3]  += (-elasticity_area*vertex_force_sum_t1[0]) * rvec[1];
+      vir[4]  += (-elasticity_area*vertex_force_sum_t1[0]) * rvec[2];
+      vir[5]  += (-elasticity_area*vertex_force_sum_t1[1]) * rvec[2];
     }
     double fx = -F_t1[0]; 
     double fy = -F_t1[1]; 
@@ -799,6 +814,16 @@ void FixVolComp::post_force(int vflag)
     f[i][0] += fx;
     f[i][1] += fy;
     f[i][2] += fz;
+    if (evflag) {
+      // domain->unmap(x[i], image[i], unwrap);
+      // vir[0] = fx * unwrap[0];
+      // vir[1] = fy * unwrap[1];
+      // vir[2] = fz * unwrap[2];
+      // vir[3] = fx * unwrap[1];
+      // vir[4] = fy * unwrap[2];
+      // vir[5] = fz * unwrap[2];
+      v_tally(i, vir);
+    }
   }
  }
  

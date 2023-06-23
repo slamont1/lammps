@@ -11,14 +11,17 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-#include "fix_customforce.h"
+#include "fix_volcomp.h"
 
 #include "arg_info.h"
-#include "error.h"
 #include "atom.h"
 #include "atom_masks.h"
+#include "cell.hh"
+#include "comm.h"
 #include "compute.h"
 #include "domain.h"
+#include "error.h"
+#include "group.h"
 #include "input.h"
 #include "memory.h"
 #include "modify.h"
@@ -26,25 +29,22 @@
 #include "respa.h"
 #include "update.h"
 #include "variable.h"
-#include "comm.h"
-#include "cell.hh"
-#include "group.h"
 
+#include <algorithm>
+#include <bits/stdc++.h>
+#include <fstream>
+#include <iostream>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <math.h>
+#include <random>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
-#include <iostream>
-#include <fstream>
-#include <cmath>
-#include <math.h>
 #include <vector>
-#include <bits/stdc++.h>
-#include <random>
-#include <algorithm>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -56,11 +56,11 @@ enum { NONE, CONSTANT, EQUAL, ATOM };
 
 /* ---------------------------------------------------------------------- */
 
-FixCustomForce::FixCustomForce(LAMMPS *lmp, int narg, char **arg) :
+FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
     Fix(lmp, narg, arg), nvalues(0), which(nullptr), argindex(nullptr), value2index(nullptr),
     ids(nullptr), idregion(nullptr), region(nullptr), voro_data(nullptr)
 {
-  if (narg < 4) error->all(FLERR, "Illegal fix customforce command: not sufficient args");
+  if (narg < 4) error->all(FLERR, "Illegal fix volcomp command: not sufficient args");
 
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world, &nprocs);
@@ -110,7 +110,7 @@ FixCustomForce::FixCustomForce(LAMMPS *lmp, int narg, char **arg) :
 
     if ((which[i] == ArgInfo::UNKNOWN) || (which[i] == ArgInfo::NONE)
         || (argi.get_dim() > 1))
-        error->all(FLERR,"Illegal fix customforce command 1");
+        error->all(FLERR,"Illegal fix volcomp command 1");
   }
 
 
@@ -127,30 +127,30 @@ FixCustomForce::FixCustomForce(LAMMPS *lmp, int narg, char **arg) :
     if (which[i] == ArgInfo::COMPUTE) {
       int icompute = modify->find_compute(ids[i]);
       if (icompute < 0)
-        error->all(FLERR,"Compute ID for fix customfoce does not exist");
+        error->all(FLERR,"Compute ID for fix volcomp does not exist");
       if (modify->compute[icompute]->peratom_flag == 0)
         error->all(FLERR,
-                   "Fix customforce compute does not calculate per-atom values");
+                   "Fix volcomp compute does not calculate per-atom values");
       if (argindex[i] == 0 &&
           modify->compute[icompute]->size_peratom_cols != 0)
-        error->all(FLERR,"Fix customforce compute does not "
+        error->all(FLERR,"Fix volcomp compute does not "
                    "calculate a per-atom vector");
       if (argindex[i] && modify->compute[icompute]->size_peratom_cols == 0)
-        error->all(FLERR,"Fix customforce compute does not "
+        error->all(FLERR,"Fix volcomp compute does not "
                    "calculate a per-atom array");
       if (argindex[i] &&
           argindex[i] > modify->compute[icompute]->size_peratom_cols)
-        error->all(FLERR,"Fix customforce compute array is accessed out-of-range");
+        error->all(FLERR,"Fix volcomp compute array is accessed out-of-range");
 
     } else if (which[i] == ArgInfo::FIX) {
       int ifix = modify->find_fix(ids[i]);
       if (ifix < 0)
-        error->all(FLERR,"Fix ID for fix customforce does not exist");
+        error->all(FLERR,"Fix ID for fix volcomp does not exist");
       if (argindex[i] == 0 && modify->fix[ifix]->vector_flag == 0)
         error->all(FLERR,
-                   "Fix customforce fix does not calculate a global vector");
+                   "Fix volcomp fix does not calculate a global vector");
       if (argindex[i] && modify->fix[ifix]->array_flag == 0)
-        error->all(FLERR,"Fix customforce fix does not calculate a global array");
+        error->all(FLERR,"Fix volcomp fix does not calculate a global array");
       if (argindex[i] && argindex[i] > modify->fix[ifix]->size_array_cols)
         error->all(FLERR,"Fix ave/histo fix array is accessed out-of-range");
     }
@@ -164,25 +164,25 @@ FixCustomForce::FixCustomForce(LAMMPS *lmp, int narg, char **arg) :
   // int iarg = nvalues+1; //////////////CHECK THIS AFTER WARDS
   // while (iarg < narg) {
   //   if (strcmp(arg[iarg], "every") == 0) {
-  //     if (iarg + 2 > narg) error->all(FLERR, "Illegal fix customforce command 2");
+  //     if (iarg + 2 > narg) error->all(FLERR, "Illegal fix volcomp command 2");
   //     nevery = utils::inumeric(FLERR, arg[iarg + 1], false, lmp);
-  //     if (nevery <= 0) error->all(FLERR, "Illegal fix customforce command");
+  //     if (nevery <= 0) error->all(FLERR, "Illegal fix volcomp command");
   //     iarg += 2;
   //   } else if (strcmp(arg[iarg], "region") == 0) {
-  //     if (iarg + 2 > narg) error->all(FLERR, "Illegal fix customforce command");
+  //     if (iarg + 2 > narg) error->all(FLERR, "Illegal fix volcomp command");
   //     region = domain->get_region_by_id(arg[iarg + 1]);
-  //     if (!region) error->all(FLERR, "Region {} for fix customforce does not exist", arg[iarg + 1]);
+  //     if (!region) error->all(FLERR, "Region {} for fix volcomp does not exist", arg[iarg + 1]);
   //     idregion = utils::strdup(arg[iarg + 1]);
   //     iarg += 2;
   //   } else
-  //     error->all(FLERR, "Illegal fix customforce command");
+  //     error->all(FLERR, "Illegal fix volcomp command");
   // }
 
 }
 
 /* ---------------------------------------------------------------------- */
 
-FixCustomForce::~FixCustomForce()
+FixVolComp::~FixVolComp()
 {
   delete[] idregion;
   delete[] which;
@@ -198,7 +198,7 @@ FixCustomForce::~FixCustomForce()
 /* ---------------------------------------------------------------------- */
 // returntype classname :: functidentifier(args) }
 
-int FixCustomForce::setmask()
+int FixVolComp::setmask()
 {
   datamask_read = datamask_modify = 0;
 
@@ -211,7 +211,7 @@ int FixCustomForce::setmask()
 
 /* ---------------------------------------------------------------------- */
 
-void FixCustomForce::init()
+void FixVolComp::init()
 {
   // set indices and check validity of all computes and variables
 
@@ -220,7 +220,7 @@ void FixCustomForce::init()
   /*For future when we include nevery and region ids*/
   // if (idregion) {
   //   region = domain->get_region_by_id(idregion);
-  //   if (!region) error->all(FLERR, "Region {} for fix customforce does not exist", idregion);
+  //   if (!region) error->all(FLERR, "Region {} for fix volcomp does not exist", idregion);
   // }
 
 
@@ -249,7 +249,7 @@ void FixCustomForce::init()
 
 /* ---------------------------------------------------------------------- */
 
-void FixCustomForce::setup(int vflag)
+void FixVolComp::setup(int vflag)
 {
   if (utils::strmatch(update->integrate_style, "^verlet"))
     post_force(vflag);
@@ -262,7 +262,7 @@ void FixCustomForce::setup(int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void FixCustomForce::min_setup(int vflag)
+void FixVolComp::min_setup(int vflag)
 {
   post_force(vflag);
 }
@@ -507,7 +507,7 @@ void vector_matrix(double *result, double *vec, double mat[][3]){
 /*<<<<<<<<<<<<<<<<<<<<<< HELPER FUNCTIONS (END) >>>>>>>>>>>>>>>>>>>>>>>>>*/
 /* ---------------------------------------------------------------------- */
 
-void FixCustomForce::post_force(int vflag)
+void FixVolComp::post_force(int vflag)
 {
   double **x = atom->x;
   double **f = atom->f;
@@ -530,9 +530,6 @@ void FixCustomForce::post_force(int vflag)
   // virial setup
 
   v_init(vflag);
-
-  if (lmp->kokkos)
-    atom->sync_modify(Host, (unsigned int) (F_MASK | MASK_MASK), (unsigned int) F_MASK);
 
   // update region if necessary
 
@@ -809,21 +806,21 @@ void FixCustomForce::post_force(int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void FixCustomForce::post_force_respa(int vflag, int ilevel, int /*iloop*/)
+void FixVolComp::post_force_respa(int vflag, int ilevel, int /*iloop*/)
 {
   if (ilevel == ilevel_respa) post_force(vflag);
 }
 
 /* ---------------------------------------------------------------------- */
 
-void FixCustomForce::min_post_force(int vflag)
+void FixVolComp::min_post_force(int vflag)
 {
   post_force(vflag);
 }
 
 /*------------------------------------------------------------------------*/
 
-int FixCustomForce::pack_forward_comm(int n, int *list, double *buf,
+int FixVolComp::pack_forward_comm(int n, int *list, double *buf,
                                     int /*pbc_flag*/, int * /*pbc*/)
 
 {
@@ -842,7 +839,7 @@ int FixCustomForce::pack_forward_comm(int n, int *list, double *buf,
   return m;
 }
 
-void FixCustomForce::unpack_forward_comm(int n, int first, double *buf)
+void FixVolComp::unpack_forward_comm(int n, int first, double *buf)
 {
   int i,j,m,last;
 

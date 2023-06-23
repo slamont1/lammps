@@ -13,22 +13,22 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(customforce,FixCustomForce);
+FixStyle(volcomp,FixVolComp);
 // clang-format on
 #else
 
 //PRB{These Statements ensire that this class is only inlcuded once in the project}
-#ifndef LMP_FIX_CUSTOMFORCE_H
-#define LMP_FIX_CUSTOMFORCE_H
+#ifndef LMP_FIX_VOLCOMP_H
+#define LMP_FIX_VOLCOMP_H
 
 #include "fix.h"
 
 namespace LAMMPS_NS {
 
-class FixCustomForce : public Fix {
+class FixVolComp : public Fix {
  public:
-  FixCustomForce(class LAMMPS *, int, char **);
-  ~FixCustomForce() override;
+  FixVolComp(class LAMMPS *, int, char **);
+  ~FixVolComp() override;
   int setmask() override;
   void init() override;
   void setup(int) override;

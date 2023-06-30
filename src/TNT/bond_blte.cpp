@@ -11,7 +11,7 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-#include "bond_wlc.h"
+#include "bond_blte.h"
 
 #include "atom.h"
 #include "comm.h"
@@ -25,28 +25,30 @@
 #include <cmath>
 #include <cstring>
 
-#define PI 3.1415926535897932384626433832795
-
 using namespace LAMMPS_NS;
 
 /* ---------------------------------------------------------------------- */
 
-BondWLC::~BondWLC()
+BondBLTE::~BondBLTE()
 {
   if (allocated && !copymode) {
     memory->destroy(setflag);
+	memory->destroy(L);
     memory->destroy(lp);
-    memory->destroy(L);
+    memory->destroy(T);	
   }
 }
 
 /* ---------------------------------------------------------------------- */
 
-void BondWLC::compute(int eflag, int vflag)
+void BondBLTE::compute(int eflag, int vflag)
 {
   int i1, i2, n, type;
-  double delx, dely, delz, rsq, ebond, fbond;
-  double lam;
+  double delx, dely, delz, ebond, fbond;
+  double rsq, lam, r, Lmax, l_p;
+  double kb, kappa_b, Temp, pi;
+  
+  pi = 3.141592653589793;
 
   ebond = 0.0;
   ev_init(eflag, vflag);
@@ -66,36 +68,43 @@ void BondWLC::compute(int eflag, int vflag)
     delx = x[i1][0] - x[i2][0];
     dely = x[i1][1] - x[i2][1];
     delz = x[i1][2] - x[i2][2];
+	
+	rsq = delx * delx + dely * dely + delz * delz;
 
-    rsq = delx * delx + dely * dely + delz * delz;
+	// Max rod elongation 
+	Lmax 	= L[type]; 
+	// Persistence Length 
+	l_p 	= lp[type];
+	// Temperature 
+	Temp 	= T[type];
+	// Boltzmann constant 
+	kb = 1;
+	// End-to-end distance
+	r = sqrt(rsq);
+	// Non-dimensional Filament Extension Factor
+	lam = r/Lmax;
 
-    // Determine stretch ratio
-
-    lam = sqrt(rsq)/L[type];
-
-    // if lam -> 1, then chain is approaching contour length
-        // issue a warning
+    // if lam -> 1, filament streched at L
+    // issue a warning and reset lam
     // if lam > 2 something serious is wrong, abort
 
-    if (lam > 0.99) {
-        error->warning(FLERR, "WLC bond too long: {} {:.8}", update->ntimestep, lam);
-        if (lam > 2.0) error->one(FLERR, "Bad WLC bond");
-        lam = 0.99;
+    if (lam >= 0.99) {
+      error->warning(FLERR, "Blundell-Terentjev bond too long: {} {}", update->ntimestep,  sqrt(rsq));
+      if (lam > 1) error->one(FLERR, "Bad Blundell-Terentjev bond");
     }
 
-    // Calculate force magnitude
-    double lam2 = pow(lam,2.0);
-    double term1 = (4.0*lam)/(lp[type]*PI*pow((lam2-1),2.0));
-    double term2 = (lp[type]*pow(PI,2.0)*lam)/L[type]/L[type];
-    fbond = -(term1-term2);
-
-    // Energy
+    // Calculate Force
+	
+	// fbond = k_1*epsilon*exp(k_2*epsilon*epsilon)*(epsilon + 1);
+	
+	fbond = (-1) * (kb * Temp) * ((-1*pi*pi*l_p/(Lmax*Lmax))*lam + 4/(pi*l_p)*lam*pow(1-lam*lam, -2)) * (Lmax/r);
+	
+    // energy
 
     if (eflag) {
-        double Eterm1 = lp[type]*pow(PI,2.0)*(1-lam2)/2.0/L[type];
-        double Eterm2 = 2.0*L[type]/( PI*lp[type]*(1-lam2) );
-        ebond = Eterm1+Eterm2;
-    }
+      ebond = (kb * Temp) * (0.5*pi*pi*l_p/Lmax*(1-lam*lam) + (2*Lmax/l_p)*(1/pi)*1/(1-lam*lam));
+		//ebond = (kb*Temp)/lp) * (0.5*lam*lam + 0.25*pow(1-lam, -1) - 0.25*lam) * Lmax;
+	}
 
     // apply force to each of 2 atoms
 
@@ -117,11 +126,12 @@ void BondWLC::compute(int eflag, int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void BondWLC::allocate()
+void BondBLTE::allocate()
 {
   allocated = 1;
   const int np1 = atom->nbondtypes + 1;
 
+  memory->create(T, np1, "bond:T");
   memory->create(lp, np1, "bond:lp");
   memory->create(L, np1, "bond:L");
   memory->create(setflag, np1, "bond:setflag");
@@ -132,21 +142,22 @@ void BondWLC::allocate()
    set coeffs for one type
 ------------------------------------------------------------------------- */
 
-void BondWLC::coeff(int narg, char **arg)
+void BondBLTE::coeff(int narg, char **arg)
 {
-  if (narg != 3) error->all(FLERR, "Incorrect args for bond coefficients");
+  if (narg != 4) error->all(FLERR, "Incorrect args for bond coefficients");
   if (!allocated) allocate();
 
   int ilo, ihi;
   utils::bounds(FLERR, arg[0], 1, atom->nbondtypes, ilo, ihi, error);
-
-  double lp_one = utils::numeric(FLERR, arg[1], false, lmp);
-  double L_one = utils::numeric(FLERR, arg[2], false, lmp);
-
+  
+  double T_one = utils::numeric(FLERR, arg[1], false, lmp);
+  double lp_one = utils::numeric(FLERR, arg[2], false, lmp);
+  double L_one = utils::numeric(FLERR, arg[3], false, lmp);
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
-    lp[i] = lp_one;
-    L[i] = L_one;
+    T[i] = T_one;
+	lp[i] = lp_one;
+	L[i] = L_one;
     setflag[i] = 1;
     count++;
   }
@@ -154,9 +165,22 @@ void BondWLC::coeff(int narg, char **arg)
   if (count == 0) error->all(FLERR, "Incorrect args for bond coefficients");
 }
 
+/* ----------------------------------------------------------------------
+   check if special_bond settings are valid
+------------------------------------------------------------------------- */
+
+void BondBLTE::init_style()
+{
+  // special bonds should be 0 1 1
+
+  if (force->special_lj[1] != 0.0 || force->special_lj[2] != 1.0 || force->special_lj[3] != 1.0) {
+    if (comm->me == 0) error->warning(FLERR, "Use special bonds = 0,1,1 with bond style fene");
+  }
+}
+
 /* ---------------------------------------------------------------------- */
 
-double BondWLC::equilibrium_distance(int i)
+double BondBLTE::equilibrium_distance(int i)
 {
   return 0.0;
 }
@@ -165,24 +189,27 @@ double BondWLC::equilibrium_distance(int i)
    proc 0 writes to restart file
 ------------------------------------------------------------------------- */
 
-void BondWLC::write_restart(FILE *fp)
+void BondBLTE::write_restart(FILE *fp)
 {
-  fwrite(&lp[1], sizeof(double), atom->nbondtypes, fp);
-  fwrite(&L[1], sizeof(double), atom->nbondtypes, fp);
+  fwrite(&T[1], sizeof(double), atom->nbondtypes, fp);
+  fwrite(&lp[2], sizeof(double), atom->nbondtypes, fp);
+  fwrite(&L[3], sizeof(double), atom->nbondtypes, fp);  
 }
 
 /* ----------------------------------------------------------------------
    proc 0 reads from restart file, bcasts
 ------------------------------------------------------------------------- */
 
-void BondWLC::read_restart(FILE *fp)
+void BondBLTE::read_restart(FILE *fp)
 {
   allocate();
 
   if (comm->me == 0) {
-    utils::sfread(FLERR, &lp[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
-    utils::sfread(FLERR, &L[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
+    utils::sfread(FLERR, &T[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
+	utils::sfread(FLERR, &lp[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
+	utils::sfread(FLERR, &L[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
   }
+  MPI_Bcast(&T[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&lp[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&L[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
 
@@ -193,46 +220,50 @@ void BondWLC::read_restart(FILE *fp)
    proc 0 writes to data file
 ------------------------------------------------------------------------- */
 
-void BondWLC::write_data(FILE *fp)
+void BondBLTE::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->nbondtypes; i++)
-    fprintf(fp, "%d %g %g\n", i, lp[i], L[i]);
+    fprintf(fp, "%d %g %g %g\n", i, T[i], lp[i], L[i]);
 }
 
 /* ---------------------------------------------------------------------- */
 
-double BondWLC::single(int type, double rsq, int /*i*/, int /*j*/, double &fforce)
+double BondBLTE::single(int type, double rsq, int /*i*/, int /*j*/, double &fforce)
 {
-  double lam = sqrt(rsq)/L[type];
+	double pi = 3.141592653589793;
+	// Max rod elongation 
+	double Lmax 	= L[type]; 
+	// Persistence length
+	double l_p = lp[type];
+	// Temperature 
+	double Temp 	= T[type];
+	// Boltzmann constant 
+	double kb = 1;
+	// End-to-end distance
+	double r = sqrt(rsq);
+	// Non-dimensional Filament Extension Factor
+	double lam = r/Lmax;
 
-  // if lam -> 1, then chain is approaching contour length
-    // issue a warning
-  // if lam > 2 something serious is wrong, abort
+    if (lam >= 0.99) {
+      error->warning(FLERR, "Blundell-Terentjev bond too long: {} {}", update->ntimestep,  sqrt(rsq));
+      if (lam > 1) error->one(FLERR, "Bad Blundell-Terentjev bond");
+    }
 
-  if (lam > 0.99) {
-    error->warning(FLERR, "WLC bond too long: {} {:.8}", update->ntimestep, lam);
-    if (lam > 2.0) error->one(FLERR, "Bad WLC bond");
-    lam = 0.99;
-  }
+    // Calculate Force
+	fforce = (-1) * (kb * Temp) * ((-1*pi*pi*l_p/(Lmax*Lmax))*lam + 4/(pi*l_p)*lam*pow(1-lam*lam, -2)) * (Lmax/r);
 
-  double lam2 = pow(lam,2.0);
-  double term1 = (4.0*lam)/(lp[type]*PI*pow((lam2-1),2.0));
-  double term2 = (lp[type]*pow(PI,2.0)*lam)/L[type]/L[type];
-  fforce = -(term1-term2);
-
-  // Energy
-  double Eterm1 = lp[type]*pow(PI,2.0)*(1-lam2)/2.0/L[type];
-  double Eterm2 = 2.0*L[type]/( PI*lp[type]*(1-lam2) );
-  double eng = Eterm1+Eterm2;
+    // energy
+	double eng = (kb * Temp) * (0.5*pi*pi*l_p/Lmax*(1-lam*lam) + (2*Lmax/l_p)*(1/pi)*1/(1-lam*lam));
 
   return eng;
 }
 
 /* ---------------------------------------------------------------------- */
 
-void *BondWLC::extract(const char *str, int &dim)
+void *BondBLTE::extract(const char *str, int &dim)
 {
   dim = 1;
+  if (strcmp(str, "T") == 0) return (void *) T;
   if (strcmp(str, "lp") == 0) return (void *) lp;
   if (strcmp(str, "L") == 0) return (void *) L;
   return nullptr;

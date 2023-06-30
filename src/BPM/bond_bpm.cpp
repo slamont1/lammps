@@ -187,13 +187,13 @@ void BondBPM::settings(int narg, char **arg)
         iarg++;
       }
     } else if (strcmp(arg[iarg], "overlay/pair") == 0) {
-      if (iarg + 1 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for overlay/pair");
+      if (iarg + 2 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for overlay/pair");
       overlay_flag = utils::logical(FLERR, arg[iarg + 1], false, lmp);
-      iarg++;
+      iarg += 2;
     } else if (strcmp(arg[iarg], "break") == 0) {
-      if (iarg + 1 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for break");
+      if (iarg + 2 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for break");
       break_flag = utils::logical(FLERR, arg[iarg + 1], false, lmp);
-      iarg++;
+      iarg += 2;
     } else {
       leftover_iarg.push_back(iarg);
       iarg++;

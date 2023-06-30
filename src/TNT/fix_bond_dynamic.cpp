@@ -313,9 +313,9 @@ void FixBondDynamic::setup(int /*vflag*/)
   for (i = 0; i < nlocal; i++) {
     if (num_bond[i] == 0) continue;
     for (j = 0; j < num_bond[i]; j++) {
-      if (bond_type[i][j] == btype) {
+       if (bond_type[i][j] == btype) {
         fbd[i][j] = bond_atom[i][j]; // ADD OPTION FOR INCLUDING OUTSIDE ATOMS OR NOT DIRECTLY
-      }
+       }
     }
   }
 

@@ -72,6 +72,8 @@ FixBondRupturess::FixBondRupturess(LAMMPS *lmp, int narg, char **arg) :
 
   flag_mol = 0;
   flag_skip = 0;
+  flag_fcrit = 0;
+  f_critical = 0;
   skip = 0;
   maxbond = atom->bond_per_atom;
   int iarg = 7;
@@ -91,6 +93,11 @@ FixBondRupturess::FixBondRupturess(LAMMPS *lmp, int narg, char **arg) :
       flag_skip = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       skip = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
       iarg += 3;
+    } else if (strcmp(arg[iarg],"fcrit") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
+      flag_fcrit = 1;
+      f_critical = utils::numeric(FLERR,arg[iarg+1],false,lmp);
+      iarg += 2;
     } else error->all(FLERR,"Illegal fix bond/rupturess command");
   }
 
@@ -203,9 +210,9 @@ void FixBondRupturess::setup(int /*vflag*/)
   for (i = 0; i < nlocal; i++) {
     if (num_bond[i] == 0) continue;
     for (j = 0; j < num_bond[i]; j++) {
-      // if (bond_type[i][j] == btype) {
+      if (bond_type[i][j] == btype) {
         fbd[i][j] = bond_atom[i][j]; // ADD OPTION FOR INCLUDING OUTSIDE ATOMS OR NOT DIRECTLY
-      // }
+      }
     }
   }
 
@@ -253,6 +260,8 @@ void FixBondRupturess::post_integrate()
   int *type = atom->type;
   Bond *bond = force->bond;
 
+  double fbond,engpot;
+
   /* BEGIN BREAKING PROCESS */
   // loop over local atoms
   // check for possible breaks
@@ -284,6 +293,24 @@ void FixBondRupturess::post_integrate()
         delz = ztmp - x[j][2];
         domain->minimum_image(delx, dely, delz);
         rsq = delx*delx + dely*dely + delz*delz;
+
+        if (flag_fcrit) {
+          engpot = bond->single(btype,rsq,i,j,fbond);
+          if (abs(fbond) >= f_critical) {
+            fbd[i][b] = -tagj;
+
+            // find the entry of atom j and update its fbd as well
+            // if j is a ghost atom, it will do this on its own processor
+            for (bb = 0; bb < maxbond; bb++) {
+                if (fbd[j][bb] == tag[i]) {
+                    fbd[j][bb] = -tag[i];
+                    break;
+                }
+            }
+          }
+          continue;
+        }
+        
         if (rsq >= r2_critical) {
             fbd[i][b] = -tagj;
 

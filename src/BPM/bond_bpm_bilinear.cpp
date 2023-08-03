@@ -617,7 +617,7 @@ void BondBPMBilinear::allocate()
 
 void BondBPMBilinear::coeff(int narg, char **arg)
 {
-  if (narg != 13) error->all(FLERR, "Incorrect args for bond coefficients");
+  if (narg != 16) error->all(FLERR, "Incorrect args for bond coefficients");
   if (!allocated) allocate();
 
   int ilo, ihi;

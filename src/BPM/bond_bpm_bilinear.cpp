@@ -199,7 +199,6 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   double psi, theta, cos_phi, sin_phi;
   double mag_in_plane, mag_out_plane;
   double Fs_mag, Tt_mag, Tb_mag;
-  double Kr_type, Ks_type;
 
   double q1[4], q2[4];
   double q2inv[4], mq[4], mqinv[4], qp21[4], q21[4], qtmp[4];
@@ -233,18 +232,18 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
 
   // Check transition strain for bilinear spring
   double eps_temp = (r_mag - r0_mag)*r0_mag_inv;
-  if (abs(eps_temp) > epsK1K2_type) {
-    Kr_type = Kr2_type;
-    Ks_type = Ks2_type;
-  } else {
-    Kr_type = Kr1_type;
-    Ks_type = Ks1_type;
-  }
+  int yielding = 0;
+  if (abs(eps_temp) > epsK1K2_type) yielding = 1;
 
   // Calculate normal forces, rb = bond vector in particle 1's frame
   MathExtra::qconjugate(q2, q2inv);
   MathExtra::quatrotvec(q2inv, r, rb);
-  Fr = Kr_type * (r_mag - r0_mag);
+
+  if (yielding) {
+    Fr = Kr1_type * ( Kr2_type * (r_mag - r0_mag) + epsK1K2_type * Kr1_type ) / (Kr1_type + Kr2_type);
+  } else {
+    Fr = Kr1_type * (r_mag - r0_mag);
+  }
 
   MathExtra::scale3(Fr * r_mag_inv, rb, F_rot);
 
@@ -257,13 +256,21 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   MathExtra::cross3(rb, rb_x_r0, s);
   MathExtra::norm3(s);
 
-  MathExtra::scale3(Ks_type * r_mag * gamma, s, Fs);
+  if (yielding) {
+    MathExtra::scale3(Ks2_type * r_mag * gamma, s, Fs);
+  } else {
+    MathExtra::scale3(Ks1_type * r_mag * gamma, s, Fs);
+  }
 
   // Calculate torque due to tangential displacements
   MathExtra::cross3(r0, rb, t);
   MathExtra::norm3(t);
 
-  MathExtra::scale3(0.5 * r_mag * Ks_type * r_mag * gamma, t, Ts);
+  if (yielding) {
+    MathExtra::scale3(0.5 * r_mag * Ks2_type * r_mag * gamma, t, Ts);
+  } else {
+    MathExtra::scale3(0.5 * r_mag * Ks1_type * r_mag * gamma, t, Ts);
+  }
 
   // Relative rotation force/torque
   // Use representation of X'Y'Z' rotations from Wang, Mora 2009
@@ -343,13 +350,23 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   Ttp[1] = 0.0;
   Ttp[2] = Kt[type] * psi;
 
-  Fsp[0] = -0.5 * Ks_type * r_mag * theta * cos_phi;
-  Fsp[1] = -0.5 * Ks_type * r_mag * theta * sin_phi;
-  Fsp[2] = 0.0;
+  if (yielding) {
+    Fsp[0] = -0.5 * Ks2_type * r_mag * theta * cos_phi;
+    Fsp[1] = -0.5 * Ks2_type * r_mag * theta * sin_phi;
+    Fsp[2] = 0.0;
 
-  Tsp[0] = 0.25 * Ks_type * r_mag * r_mag * theta * sin_phi;
-  Tsp[1] = -0.25 * Ks_type * r_mag * r_mag * theta * cos_phi;
-  Tsp[2] = 0.0;
+    Tsp[0] = 0.25 * Ks2_type * r_mag * r_mag * theta * sin_phi;
+    Tsp[1] = -0.25 * Ks2_type * r_mag * r_mag * theta * cos_phi;
+    Tsp[2] = 0.0;
+  } else {
+    Fsp[0] = -0.5 * Ks1_type * r_mag * theta * cos_phi;
+    Fsp[1] = -0.5 * Ks1_type * r_mag * theta * sin_phi;
+    Fsp[2] = 0.0;
+
+    Tsp[0] = 0.25 * Ks1_type * r_mag * r_mag * theta * sin_phi;
+    Tsp[1] = -0.25 * Ks1_type * r_mag * r_mag * theta * cos_phi;
+    Tsp[2] = 0.0;
+  }
 
   // Rotate forces/torques back to 1st particle's frame
 

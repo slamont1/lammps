@@ -1,6 +1,6 @@
 .. index:: fix volcomp
 
-fix addforce command
+fix volcomp command
 ====================
 
 Syntax
@@ -8,36 +8,37 @@ Syntax
 
 .. code-block:: LAMMPS
 
-   fix ID group-ID addforce fx fy fz keyword value ...
+   fix ID group-ID volcomp vector_name compute_name
 
 * ID, group-ID are documented in :doc:`fix <fix>` command
-* addforce = style name of this fix command
-* fx,fy,fz = force component values (force units)
+* volcomp = style name of this fix command
+* vector_name = name of the vector that stores model paramters
+* compute_name = ID of compute of compute_voronoi 
 
   .. parsed-literal::
 
-       any of fx,fy,fz can be a variable (see below)
+       vector_name is written as f_ID[1]
+       compute_name is written as c_ID[*]
 
 * zero or more keyword/value pairs may be appended to args
-* keyword = *every* or *region* or *energy*
+* keyword = *store_init*
 
   .. parsed-literal::
 
-       *every* value = Nevery
-         Nevery = add force every this many time steps
-       *region* value = region-ID
-         region-ID = ID of region atoms must be in to have added force
-       *energy* value = v_name
-         v_name = variable with name that calculates the potential energy of each atom in the added force field
+       *store_init* value = f_ID of the fix_store/atom
+          
+ //      *region* value = region-ID
+ //        region-ID = ID of region atoms must be in to have added force
+
 
 Examples
 """"""""
 
 .. code-block:: LAMMPS
 
-   fix kick flow addforce 1.0 0.0 0.0
-   fix kick flow addforce 1.0 0.0 v_oscillate
-   fix ff boundary addforce 0.0 0.0 v_push energy v_espace
+   fix kick flow volcomp 1.0 0.0 0.0
+   fix kick flow volcomp 1.0 0.0 v_oscillate
+   fix ff boundary volcomp 0.0 0.0 v_push energy v_espace
 
 Description
 """""""""""

@@ -57,15 +57,12 @@ enum { NONE, CONSTANT, EQUAL, ATOM };
 /* ---------------------------------------------------------------------- */
 
 FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
-    Fix(lmp, narg, arg), nvalues(0), which(nullptr), argindex(nullptr), value2index(nullptr),
-    ids(nullptr), idregion(nullptr), region(nullptr), voro_data(nullptr)
+    Fix(lmp, narg, arg), idregion(nullptr), region(nullptr), voro_data(nullptr)
 {
   if (narg < 4) error->all(FLERR, "Illegal fix volcomp command: not sufficient args");
 
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world, &nprocs);
-
-  srand(10);
 
   dynamic_group_allow = 1;
 
@@ -79,104 +76,58 @@ FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
   respa_level_support = 1;
   ilevel_respa = 0;
 
-  nvalues = narg-3;
+  int which;
 
-  // expand args if there's a wildcard  character "*" (can reset nvalues)
-  // see fix_ave_atom
-
-  int expand = 0;
-  char **earg;
-  nvalues = utils::expand_args(FLERR,nvalues,&arg[3],1,earg,lmp);
-
-  if (earg != &arg[3]) expand = 1;
-  arg = earg;
-
-  /*parse values*/
-
-  which = new int[nvalues];         //pointer to a 1D interger array
-  argindex = new int[nvalues];      //"
-  ids = new char*[nvalues];         // ponter to 2D character array/2D string
-  value2index = new int[nvalues];   // ponter to a 2D integer array
-
-  for(int i = 0; i < nvalues; i++){
-
-    ids[i] = nullptr;
-
-    ArgInfo argi(arg[i]);
-
-    which[i] = argi.get_type();       // Will check for argument type 
-    argindex[i] = argi.get_index1();
-    ids[i] = argi.copy_name();        // store the user defined name of compute, eg c_voro so id[i]= voro
-
-    if ((which[i] == ArgInfo::UNKNOWN) || (which[i] == ArgInfo::NONE)
-        || (argi.get_dim() > 1))
-        error->all(FLERR,"Illegal fix volcomp command 1");
+  // Parse fix id
+  ArgInfo argi(arg[3]);
+  which = argi.get_type();       // Will check for argument type 
+  if ((which == ArgInfo::UNKNOWN) || (which == ArgInfo::NONE) || (which != ArgInfo::FIX)) {
+      error->all(FLERR,"Illegal fix volcomp command: wrong fix id");
   }
+  char id_fix_vector = argi.copy_name();  // store the user defined name of fix vector
+  int ifix = modify->find_fix(id_fix_vector);
+  if (ifix < 0)
+    error->all(FLERR,"Fix ID for fix volcomp does not exist");
+  Fix *fix = modify->fix[ifix];
+  Elasticity = fix->compute_vector(0);
+  Apref = fix->compute_vector(1);
 
-
-  // if wildcard expansion occurred, free earg memory from expand_args()
-
-  if (expand) {
-    for (int i = 0; i < nvalues; i++) delete [] earg[i];
-    memory->sfree(earg);
+  // Parse compute id
+  ArgInfo argi(arg[4]);
+  which = argi.get_type();      // Will check for argument type 
+  if ((which == ArgInfo::UNKNOWN) || (which == ArgInfo::NONE) || (which != ArgInfo::COMPUTE)) {
+      error->all(FLERR,"Illegal fix volcomp command: wrong compute id");
   }
+  char id_compute_voronoi = argi.copy_name();  // store the user defined name of fix vector
+  int icompute = modify->find_compute(id_compute_voronoi);
+  if (icompute < 0)
+    error->all(FLERR,"Compute ID for fix volcomp does not exist");
 
- // setup and error check
-
- for (int i = 0; i < nvalues; i++) {
-    if (which[i] == ArgInfo::COMPUTE) {
-      int icompute = modify->find_compute(ids[i]);
-      if (icompute < 0)
-        error->all(FLERR,"Compute ID for fix volcomp does not exist");
-      if (modify->compute[icompute]->peratom_flag == 0)
-        error->all(FLERR,
-                   "Fix volcomp compute does not calculate per-atom values");
-      if (argindex[i] == 0 &&
-          modify->compute[icompute]->size_peratom_cols != 0)
-        error->all(FLERR,"Fix volcomp compute does not "
-                   "calculate a per-atom vector");
-      if (argindex[i] && modify->compute[icompute]->size_peratom_cols == 0)
-        error->all(FLERR,"Fix volcomp compute does not "
-                   "calculate a per-atom array");
-      if (argindex[i] &&
-          argindex[i] > modify->compute[icompute]->size_peratom_cols)
-        error->all(FLERR,"Fix volcomp compute array is accessed out-of-range");
-
-    } else if (which[i] == ArgInfo::FIX) {
-      int ifix = modify->find_fix(ids[i]);
-      if (ifix < 0)
-        error->all(FLERR,"Fix ID for fix volcomp does not exist");
-      if (argindex[i] == 0 && modify->fix[ifix]->vector_flag == 0)
-        error->all(FLERR,
-                   "Fix volcomp fix does not calculate a global vector");
-      if (argindex[i] && modify->fix[ifix]->array_flag == 0)
-        error->all(FLERR,"Fix volcomp fix does not calculate a global array");
-      if (argindex[i] && argindex[i] > modify->fix[ifix]->size_array_cols)
-        error->all(FLERR,"Fix ave/histo fix array is accessed out-of-range");
-    }
-  }
   // parse values for optional args
+  flag_store_init = 0;
+  ifix_store = 0;
 
-  /*this is not needed for now but if needed in future will require more modifications*/
+  int iarg = 5;
+  while (iarg < narg) {
+    if (strcmp(arg[iarg],"store_init") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix voronoi command");
+      flag_store_init = 1;
 
-  nevery = 1;  // Using default value for now
+      // Parse the id of fix_store
+      ArgInfo argi(arg[iarg]);
+      char id_fix_store = argi.copy_name();  // store the user defined name of fix vector
+      ifix_store = modify->find_fix(id_fix_vector);
+      if (ifix_store < 0)
+        error->all(FLERR,"Fix ID for fix store within fix volcomp does not exist");
 
-  // int iarg = nvalues+1; //////////////CHECK THIS AFTER WARDS
-  // while (iarg < narg) {
-  //   if (strcmp(arg[iarg], "every") == 0) {
-  //     if (iarg + 2 > narg) error->all(FLERR, "Illegal fix volcomp command 2");
-  //     nevery = utils::inumeric(FLERR, arg[iarg + 1], false, lmp);
-  //     if (nevery <= 0) error->all(FLERR, "Illegal fix volcomp command");
-  //     iarg += 2;
-  //   } else if (strcmp(arg[iarg], "region") == 0) {
-  //     if (iarg + 2 > narg) error->all(FLERR, "Illegal fix volcomp command");
-  //     region = domain->get_region_by_id(arg[iarg + 1]);
-  //     if (!region) error->all(FLERR, "Region {} for fix volcomp does not exist", arg[iarg + 1]);
-  //     idregion = utils::strdup(arg[iarg + 1]);
-  //     iarg += 2;
-  //   } else
-  //     error->all(FLERR, "Illegal fix volcomp command");
-  // }
+      iarg += 2;
+    } else error->all(FLERR,"Illegal fix voronoi command");
+  }
+
+  nevery = 1;
+
+  nmax = atom->nmax;
+  voro_data = nullptr;
 
 }
 
@@ -185,11 +136,6 @@ FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
 FixVolComp::~FixVolComp()
 {
   delete[] idregion;
-  delete[] which;
-  delete[] argindex;
-  for (int m = 0; m < nvalues; m++) delete[] ids[m];
-  delete[] ids;
-  delete[] value2index;  
   
   memory->destroy(voro_data);
   
@@ -223,26 +169,9 @@ void FixVolComp::init()
   //   if (!region) error->all(FLERR, "Region {} for fix volcomp does not exist", idregion);
   // }
 
-
   if (utils::strmatch(update->integrate_style, "^respa")) {
     ilevel_respa = (dynamic_cast<Respa *>(update->integrate))->nlevels - 1;
     if (respa_level >= 0) ilevel_respa = MIN(respa_level, ilevel_respa);
-  }
-
-  for (int m = 0; m < nvalues; m++) {
-    if (which[m] == ArgInfo::COMPUTE) {
-      int icompute = modify->find_compute(ids[m]);
-      if (icompute < 0)
-        error->all(FLERR,"Compute ID for fix ave/atom does not exist");
-      value2index[m] = icompute;
-    }
-    else if (which[m] == ArgInfo::FIX) {
-      int ifix = modify->find_fix(ids[m]);
-      if (ifix < 0)
-        error->all(FLERR,"Fix ID for fix custom does not exist");
-      value2index[m] = ifix;
-    }
-    else value2index[m] = -1;
   }
 }
 
@@ -258,6 +187,9 @@ void FixVolComp::setup(int vflag)
     post_force_respa(vflag, ilevel_respa, 0);
     (dynamic_cast<Respa *>(update->integrate))->copy_f_flevel(ilevel_respa);
   }
+
+  memory->create(voro_data,nmax,"volcomp:voro_data");
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -535,69 +467,37 @@ void FixVolComp::post_force(int vflag)
 
   if (region) region->prematch();
 
-  int me = comm->me;               //current rank value
+  int me = comm->me;  //current rank value
 
-  // accumulate results of attributes,computes,fixes,variables to local copy
-  // compute/fix/variable may invoke computes so wrap with clear/add (from fix ave atom)
-
-  vector<double> params;
-  voro_data = new double*[nall];                  
-  for(int i = 0; i < nall; i++){
-    voro_data[i] = new double[3];
+  // Possibly resize the voro_data array
+  if (atom->nmax > nmax) {
+    memory->destroy(voro_data);
+    nmax = atom->nmax;
+    memory->create(voro_data,nmax,"volcomp:voro_data");
   }
 
-  for (int i = 0; i < nall; i++){            
-    for (int m = 0; m < 3; m++){
-      voro_data[i][m] = 0.0;
-    }
+  // Initialize arrays to zero
+  for (i = 0; i < nall; i++) {
+    voro_data[i] = 0.0;
   }
 
- modify->clearstep_compute();
- int n,j;
-
-  for(int m = 0; m < nvalues; m++){
-    n = value2index[m];
-    j = argindex[m];
-
-    if (which[m] == ArgInfo::COMPUTE) {
-      Compute *compute = modify->compute[n];
-      if (!(compute->invoked_flag & Compute::INVOKED_PERATOM)) {
-        compute->compute_peratom();
-        compute->invoked_flag |= Compute::INVOKED_PERATOM;
-      }
-
-      if (j == 0) {
-        double *compute_vector = compute->vector_atom;
-        for (int i = 0; i < nlocal; i++)                                     
-          if (mask[i] & groupbit) voro_data[i][m] = compute_vector[i];
-      } else {
-        int jm1 = j - 1;
-        double **compute_array = compute->array_atom;
-        for (int i = 0; i < nlocal; i++)                                         
-          if (mask[i] & groupbit) voro_data[i][jm1] = compute_array[i][jm1];
-      }
-  } else if (which[m] == ArgInfo::FIX) {
-    Fix *fix = modify->fix[n];
-    if (j == 0) {
-      int num = fix->size_vector;
-      for (int i = 0; i < num; i++) params.push_back(fix->compute_vector(i));
-    } else {
-      int num1 = fix->size_array_rows;
-      int num2 = fix->size_array_cols;
-      for (int i = 0; i < num2; i++) params.push_back(fix->compute_array(0,i));
-    }   
+  // Invoke compute
+  modify->clearstep_compute();
+  Compute *compute = modify->compute[icompute];
+  if (!(compute->invoked_flag & Compute::INVOKED_PERATOM)) {
+    compute->compute_peratom();
+    compute->invoked_flag |= Compute::INVOKED_PERATOM;
   }
-  }
+
+  double *compute_vector = compute->vector_atom;
+  for (int i = 0; i < nlocal; i++)
+    if (mask[i] & groupbit) voro_data[i] = compute_vector[i];
+  
 
   // forward communication of voronoi data:
 
   commflag = 1;
-  comm->forward_comm(this,3);
-
-  // Read the model parameters
-
-  Elasticity = params[0]; 
-  Apref = params[1];
+  comm->forward_comm(this,1);
 
  /*Construct Delaunay Triangulation for a set of nall points using Bowyer Watson Algorithm*/
 
@@ -857,9 +757,9 @@ int FixVolComp::pack_forward_comm(int n, int *list, double *buf,
  if(commflag == 1){
     for(i = 0; i < n; i++){
       j = list[i];
-      for(k = 0; k < 3; k++){
-        buf[m++] = voro_data[j][k];
-      }
+      // for(k = 0; k < 3; k++){
+        buf[m++] = voro_data[j];
+      // }
     }
   }
   return m;
@@ -874,9 +774,9 @@ void FixVolComp::unpack_forward_comm(int n, int first, double *buf)
 
  if (commflag == 1) {
     for (i = first; i < last; i++){
-      for(j = 0; j < 3; j++){
-        voro_data[i][j] = buf[m++];
-      }
+      // for(j = 0; j < 3; j++){
+        voro_data[i] = buf[m++];
+      // }
     }
   }
 }

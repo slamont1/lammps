@@ -44,6 +44,7 @@ class FixVolComp : public Fix {
 
  protected:
  int me, nprocs; 
+ int nmax;
 
  private:
   
@@ -51,6 +52,8 @@ class FixVolComp : public Fix {
   int  nvalues;
   int *which, *argindex, *value2index;
   char **ids;
+  int flag_store_init, ifix_store;
+  int icompute;
  
   char *idregion;
   class Region *region;

@@ -743,6 +743,7 @@ void FixVolComp::post_force(int vflag)
 
       // First term values needed
       double area = voro_data[current_cell][0];
+      // double Apref = voro_apref[ii]
       double elasticity_area = (Elasticity/2)*(area-Apref);
 
       int num_vert = cell_vertices_list[current_cell].size();

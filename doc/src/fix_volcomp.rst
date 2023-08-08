@@ -1,4 +1,4 @@
-.. index:: fix volcomp
+.. index:: fix addforce
 
 fix volcomp command
 ====================

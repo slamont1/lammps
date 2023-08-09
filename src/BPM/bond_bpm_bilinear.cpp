@@ -235,8 +235,6 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   int yielding = 0;
   if (eps_temp > epsK1K2_type) yielding = 1;
 
-  printf("rmag: %f, r0: %f, eps: %f, eps_yield: %f, yielding: %d \n",r_mag,r0_mag,eps_temp,epsK1K2_type,yielding);
-
   // Calculate normal forces, rb = bond vector in particle 1's frame
   MathExtra::qconjugate(q2, q2inv);
   MathExtra::quatrotvec(q2inv, r, rb);

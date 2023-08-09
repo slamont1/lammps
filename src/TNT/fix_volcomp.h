@@ -48,20 +48,21 @@ class FixVolComp : public Fix {
 
  private:
   
+  class Compute *vcompute; // ptr to compute voronoi
+  class Fix *fstore;       // ptr to fix/store
+
   double Elasticity, Apref;
-  int  nvalues;
-  int *which, *argindex, *value2index;
-  char **ids;
-  int flag_store_init, ifix_store;
-  int icompute;
+  int flag_store_init;
  
-  char *idregion;
-  class Region *region;
- 
+  char *id_compute_voronoi, *id_fix_store;
+
   int ilevel_respa;
 
  // To read peratom data from compute voronoi
-  double **voro_data;
+  double *voro_data;
+  double *voro_area0;
+
+  // For communicating voro_data or voro_area0
   int commflag;
 
 };

@@ -57,18 +57,14 @@ enum { NONE, CONSTANT, EQUAL, ATOM };
 /* ---------------------------------------------------------------------- */
 
 FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
-    Fix(lmp, narg, arg), idregion(nullptr), region(nullptr), voro_data(nullptr)
+    Fix(lmp, narg, arg), voro_data(nullptr), voro_area0(nullptr), id_compute_voronoi(nullptr)
 {
-  if (narg < 4) error->all(FLERR, "Illegal fix volcomp command: not sufficient args");
+  if (narg < 5) error->all(FLERR, "Illegal fix volcomp command: not sufficient args");
 
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world, &nprocs);
 
   dynamic_group_allow = 1;
-
-  /*This fix takes in input as (1.) global array produced by fix vector command and (2.) per-atom array
-  produced by compute voronoi*/
-  
   energy_peratom_flag = 1;
   virial_global_flag = virial_peratom_flag = 1;
   thermo_energy = thermo_virial = 1;
@@ -76,49 +72,28 @@ FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
   respa_level_support = 1;
   ilevel_respa = 0;
 
-  int which;
-
-  // Parse fix id
-  ArgInfo argi(arg[3]);
-  which = argi.get_type();       // Will check for argument type 
-  if ((which == ArgInfo::UNKNOWN) || (which == ArgInfo::NONE) || (which != ArgInfo::FIX)) {
-      error->all(FLERR,"Illegal fix volcomp command: wrong fix id");
-  }
-  char id_fix_vector = argi.copy_name();  // store the user defined name of fix vector
-  int ifix = modify->find_fix(id_fix_vector);
-  if (ifix < 0)
-    error->all(FLERR,"Fix ID for fix volcomp does not exist");
-  Fix *fix = modify->fix[ifix];
-  Elasticity = fix->compute_vector(0);
-  Apref = fix->compute_vector(1);
+  // Parse first two arguments: elasticity and preferred area
+  Elasticity = utils::numeric(FLERR,arg[3],false,lmp);
+  Apref = utils::numeric(FLERR,arg[4],false,lmp);
 
   // Parse compute id
-  ArgInfo argi(arg[4]);
-  which = argi.get_type();      // Will check for argument type 
-  if ((which == ArgInfo::UNKNOWN) || (which == ArgInfo::NONE) || (which != ArgInfo::COMPUTE)) {
-      error->all(FLERR,"Illegal fix volcomp command: wrong compute id");
-  }
-  char id_compute_voronoi = argi.copy_name();  // store the user defined name of fix vector
-  int icompute = modify->find_compute(id_compute_voronoi);
-  if (icompute < 0)
-    error->all(FLERR,"Compute ID for fix volcomp does not exist");
+  id_compute_voronoi = utils::strdup(arg[5]);
+  vcompute = modify->get_compute_by_id(id_compute_voronoi);
+  if (!vcompute) error->all(FLERR,"Could not find compute ID {} for voronoi compute", id_compute_voronoi);
 
   // parse values for optional args
   flag_store_init = 0;
-  ifix_store = 0;
+  id_fix_store = nullptr;
 
-  int iarg = 5;
+  int iarg = 6;
   while (iarg < narg) {
     if (strcmp(arg[iarg],"store_init") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix voronoi command");
       flag_store_init = 1;
 
-      // Parse the id of fix_store
-      ArgInfo argi(arg[iarg]);
-      char id_fix_store = argi.copy_name();  // store the user defined name of fix vector
-      ifix_store = modify->find_fix(id_fix_vector);
-      if (ifix_store < 0)
-        error->all(FLERR,"Fix ID for fix store within fix volcomp does not exist");
+      id_fix_store = utils::strdup(arg[iarg+1]);
+      fstore = modify->get_fix_by_id(id_fix_store);
+      if (!fstore) error->all(FLERR,"Could not find fix ID {} for voronoi fix/store", id_fix_store);
 
       iarg += 2;
     } else error->all(FLERR,"Illegal fix voronoi command");
@@ -128,6 +103,7 @@ FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
 
   nmax = atom->nmax;
   voro_data = nullptr;
+  voro_area0 = nullptr;
 
 }
 
@@ -135,9 +111,11 @@ FixVolComp::FixVolComp(LAMMPS *lmp, int narg, char **arg) :
 
 FixVolComp::~FixVolComp()
 {
-  delete[] idregion;
+  delete[] id_compute_voronoi;
+  delete[] id_fix_store;
   
   memory->destroy(voro_data);
+  if (flag_store_init) memory->destroy(voro_area0);
   
 }
 
@@ -161,14 +139,6 @@ void FixVolComp::init()
 {
   // set indices and check validity of all computes and variables
 
-  // set index and check validity of region
- 
-  /*For future when we include nevery and region ids*/
-  // if (idregion) {
-  //   region = domain->get_region_by_id(idregion);
-  //   if (!region) error->all(FLERR, "Region {} for fix volcomp does not exist", idregion);
-  // }
-
   if (utils::strmatch(update->integrate_style, "^respa")) {
     ilevel_respa = (dynamic_cast<Respa *>(update->integrate))->nlevels - 1;
     if (respa_level >= 0) ilevel_respa = MIN(respa_level, ilevel_respa);
@@ -180,6 +150,10 @@ void FixVolComp::init()
 
 void FixVolComp::setup(int vflag)
 {
+
+  memory->create(voro_data,nmax,"volcomp:voro_data");
+  if (flag_store_init) memory->create(voro_area0,nmax,"volcomp:voro_area0");
+
   if (utils::strmatch(update->integrate_style, "^verlet"))
     post_force(vflag);
   else {
@@ -187,8 +161,6 @@ void FixVolComp::setup(int vflag)
     post_force_respa(vflag, ilevel_respa, 0);
     (dynamic_cast<Respa *>(update->integrate))->copy_f_flevel(ilevel_respa);
   }
-
-  memory->create(voro_data,nmax,"volcomp:voro_data");
 
 }
 
@@ -463,41 +435,53 @@ void FixVolComp::post_force(int vflag)
 
   v_init(vflag);
 
-  // update region if necessary
-
-  if (region) region->prematch();
-
   int me = comm->me;  //current rank value
 
   // Possibly resize the voro_data array
   if (atom->nmax > nmax) {
     memory->destroy(voro_data);
+    if (flag_store_init) memory->destroy(voro_area0);
     nmax = atom->nmax;
     memory->create(voro_data,nmax,"volcomp:voro_data");
+    if (flag_store_init) memory->create(voro_area0,nmax,"volcomp:voro_area0");
   }
 
   // Initialize arrays to zero
-  for (i = 0; i < nall; i++) {
+  for (int i = 0; i < nall; i++) {
     voro_data[i] = 0.0;
+    if (flag_store_init) voro_area0[i] = 0.0;
   }
 
   // Invoke compute
   modify->clearstep_compute();
-  Compute *compute = modify->compute[icompute];
-  if (!(compute->invoked_flag & Compute::INVOKED_PERATOM)) {
-    compute->compute_peratom();
-    compute->invoked_flag |= Compute::INVOKED_PERATOM;
+  vcompute = modify->get_compute_by_id(id_compute_voronoi);
+  if (!(vcompute->invoked_flag & Compute::INVOKED_PERATOM)) {
+    vcompute->compute_peratom();
+    vcompute->invoked_flag |= Compute::INVOKED_PERATOM;
   }
 
-  double *compute_vector = compute->vector_atom;
-  for (int i = 0; i < nlocal; i++)
-    if (mask[i] & groupbit) voro_data[i] = compute_vector[i];
-  
+  // Define pointer to fix_store
+  if (flag_store_init) fstore = modify->get_fix_by_id(id_fix_store);
 
+  // Fill voro_data and voro_area0 with values from compute voronoi
+  for (int i = 0; i < nlocal; i++) {
+    if (mask[i] & groupbit) voro_data[i] = vcompute->array_atom[i][0];
+    if (flag_store_init) {
+      if (mask[i] & groupbit) voro_area0[i] = fstore->vector_atom[i];
+    }
+  }
+  
   // forward communication of voronoi data:
 
-  commflag = 1;
+  commflag = 0;
   comm->forward_comm(this,1);
+
+  // forward communication of initial cell areas:
+
+  if (flag_store_init) {
+    commflag = 1;
+    comm->forward_comm(this,1);
+  }
 
  /*Construct Delaunay Triangulation for a set of nall points using Bowyer Watson Algorithm*/
 
@@ -629,6 +613,11 @@ void FixVolComp::post_force(int vflag)
 
  /*Cell center based vertex model force calculation*/
   
+  // printf("peratom: %d, atom columns: %d \n",fstore->peratom_flag,fstore->size_peratom_cols);
+  // for(int i = 0; i < nall; i++){
+  //   printf("nlocal: %d, voro: %f \n",nlocal,fstore->vector_atom[i]);
+  // }
+
   double unwrap[3];
   double rvec[3];
   for(int i = 0; i < nlocal; i++){
@@ -642,9 +631,17 @@ void FixVolComp::post_force(int vflag)
       double vertex_force_sum_t1[3] = {0.0};
 
       // First term values needed
-      double area = voro_data[current_cell][0];
-      // double Apref = voro_apref[ii]
-      double elasticity_area = (Elasticity/2)*(area-Apref);
+      double area = voro_data[current_cell];
+      double elasticity_area = 0.0;
+
+      if (flag_store_init) {
+        double Apref0 = voro_area0[current_cell];
+        elasticity_area = (Elasticity/2)*(area-Apref0);
+
+        // printf("Current cell: %d, Current area: %f, preferred area: %f, elasticity: %f \n",current_cell,area,Apref0,elasticity_area);
+      } else {
+        elasticity_area = (Elasticity/2)*(area-Apref);
+      }
 
       int num_vert = cell_vertices_list[current_cell].size();
       int vcount = 0;
@@ -751,15 +748,18 @@ int FixVolComp::pack_forward_comm(int n, int *list, double *buf,
 
 {
 
-  int i,j,k,m;
+  int i,j,m;
 
   m = 0;
  if(commflag == 1){
     for(i = 0; i < n; i++){
       j = list[i];
-      // for(k = 0; k < 3; k++){
-        buf[m++] = voro_data[j];
-      // }
+      buf[m++] = voro_area0[j];
+    }
+ } else {
+    for(i = 0; i < n; i++){
+      j = list[i];
+      buf[m++] = voro_data[j];
     }
   }
   return m;
@@ -767,16 +767,18 @@ int FixVolComp::pack_forward_comm(int n, int *list, double *buf,
 
 void FixVolComp::unpack_forward_comm(int n, int first, double *buf)
 {
-  int i,j,m,last;
+  int i,m,last;
 
   m = 0;
   last = first + n;
 
  if (commflag == 1) {
     for (i = first; i < last; i++){
-      // for(j = 0; j < 3; j++){
-        voro_data[i] = buf[m++];
-      // }
+      voro_area0[i] = buf[m++];
+    }
+ } else {
+    for (i = first; i < last; i++){
+      voro_data[i] = buf[m++];
     }
   }
 }

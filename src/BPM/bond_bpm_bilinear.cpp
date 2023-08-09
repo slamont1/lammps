@@ -233,14 +233,16 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   // Check transition strain for bilinear spring
   double eps_temp = (r_mag - r0_mag)*r0_mag_inv;
   int yielding = 0;
-  if (abs(eps_temp) > epsK1K2_type) yielding = 1;
+  if (eps_temp > epsK1K2_type) yielding = 1;
+
+  printf("rmag: %f, r0: %f, eps: %f, eps_yield: %f, yielding: %d \n",r_mag,r0_mag,eps_temp,epsK1K2_type,yielding);
 
   // Calculate normal forces, rb = bond vector in particle 1's frame
   MathExtra::qconjugate(q2, q2inv);
   MathExtra::quatrotvec(q2inv, r, rb);
 
   if (yielding) {
-    Fr = Kr1_type * ( Kr2_type * (r_mag - r0_mag) + epsK1K2_type * Kr1_type ) / (Kr1_type + Kr2_type);
+    Fr = Kr1_type * ( Kr2_type * eps_temp * r0_mag + epsK1K2_type * Kr1_type * r0_mag ) / (Kr1_type + Kr2_type);
   } else {
     Fr = Kr1_type * (r_mag - r0_mag);
   }

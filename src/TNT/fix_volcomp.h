@@ -39,6 +39,7 @@ class FixVolComp : public Fix {
 
   int pack_forward_comm(int, int *, double *, int, int *);
   void unpack_forward_comm(int, int, double *);
+  double memory_usage();
   
   FILE *fp;
 

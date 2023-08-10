@@ -23,6 +23,7 @@
 #include "error.h"
 #include "group.h"
 #include "input.h"
+#include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
 #include "region.h"
@@ -177,8 +178,8 @@ void FixVolComp::min_setup(int vflag)
 
 //Function Description: get the circumcircle of a triangle
 
-void calc_cc(double coords_array[][2], const vector<int>& v1,  double *CC){
-
+void calc_cc(double coords_array[][2], const vector<int>& v1,  double *CC)
+{
   double x0 = coords_array[v1[0]][0];
   double x1 = coords_array[v1[1]][0];
   double x2 = coords_array[v1[2]][0];
@@ -308,23 +309,6 @@ void get_voro_neighs(int i, const vector<vector<int>> &DTmesh, const vector<int>
   }
 }
 
-// helper function: finds the cross product of 2 vectors
-
-void getCP(double *cp, double *v1, double *v2){
-  cp[0] = v1[1]*v2[2]-v1[2]*v2[1];
-  cp[1] = v1[2]*v2[0]-v1[0]*v2[2];
-  cp[2] = v1[0]*v2[1]-v1[1]*v2[0];
-}
-
-// helper function: normalizes a vector
-
-void normalize(double *v){
-  double norm = pow(pow(v[0],2) + pow(v[1],2) + pow(v[2],2), 0.5);
-  v[0] = v[0]/norm;
-  v[1] = v[1]/norm;
-  v[2] = v[2]/norm;
-}
-
 void Jacobian(double **x, vector<int> &dt, int p, double drmu_dri[][3]){
   // identify j and k
 
@@ -399,14 +383,6 @@ void Jacobian(double **x, vector<int> &dt, int p, double drmu_dri[][3]){
 
 }
 
-// helper function: multiplies a vector and a matrix
-
-void vector_matrix(double *result, double *vec, double mat[][3]){
-  for(int i = 0; i < 3; i++){
-    result[i] = vec[0]*mat[0][i] + vec[1]*mat[1][i] + vec[2]*mat[2][i];
-  }
-}
-
 /* ---------------------------------------------------------------------- */
 /*<<<<<<<<<<<<<<<<<<<<<< HELPER FUNCTIONS (END) >>>>>>>>>>>>>>>>>>>>>>>>>*/
 /* ---------------------------------------------------------------------- */
@@ -415,19 +391,13 @@ void FixVolComp::post_force(int vflag)
 {
   double **x = atom->x;
   double **f = atom->f;
-  double **v = atom->v;
   int *mask = atom->mask;
-  imageint *image = atom->image;
-  tagint *tag = atom->tag;
-  double dt = update->dt;
-
-  if (update->ntimestep % nevery) return;
+  // tagint *tag = atom->tag;
 
   int natoms = atom->natoms;
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
   int nall = nlocal + nghost;
-  double *cut = comm->cutghost;
 
   if (update->ntimestep % nevery) return;
 
@@ -437,7 +407,7 @@ void FixVolComp::post_force(int vflag)
 
   int me = comm->me;  //current rank value
 
-  // Possibly resize the voro_data array
+  // Possibly resize arrays
   if (atom->nmax > nmax) {
     memory->destroy(voro_data);
     if (flag_store_init) memory->destroy(voro_area0);
@@ -492,23 +462,28 @@ void FixVolComp::post_force(int vflag)
 
  /*Find min/max of x-y coords to find the super triangle*/ 
 
- double ymax = -1*INFINITY, ymin = INFINITY;
- double xmax = -1*INFINITY, xmin = INFINITY; 
+ double ymax = 0.0, ymin = 0.0;
+ double xmax = 0.0, xmin = 0.0; 
 
- for (int i = 0; i < nall; i++){
-  if (ymax < x[i][1]) ymax = x[i][1];
-  if (ymin > x[i][1]) ymin = x[i][1];
-  if (xmax < x[i][0]) xmax = x[i][0];
-  if (xmin > x[i][0]) xmin = x[i][0];
+ for (int i = 0; i < nlocal; i++){
+  xmax = MAX(xmax,x[i][0]);
+  ymax = MAX(ymax,x[i][1]);
+  xmin = MIN(xmin,x[i][0]);
+  ymin = MIN(ymin,x[i][1]);
  }
+ double xmaxall, ymaxall, xminall, yminall;
+ MPI_Allreduce(&xmax, &xmaxall, 1, MPI_DOUBLE, MPI_MAX, world);
+ MPI_Allreduce(&ymax, &ymaxall, 1, MPI_DOUBLE, MPI_MAX, world);
+ MPI_Allreduce(&xmin, &xminall, 1, MPI_DOUBLE, MPI_MIN, world);
+ MPI_Allreduce(&ymin, &yminall, 1, MPI_DOUBLE, MPI_MIN, world);
 
  double dmax;
 
- if (xmax-xmin > ymax-ymin) dmax = 3*(xmax-xmin);
- else dmax = 3*(ymax-ymin);
+ if (xmaxall-xminall > ymaxall-yminall) dmax = 3*(xmaxall-xminall);
+ else dmax = 3*(ymaxall-yminall);
 
- double xcen = 0.5*(xmin+xmax);
- double ycen = 0.5*(ymin+ymax);
+ double xcen = 0.5*(xminall+xmaxall); 
+ double ycen = 0.5*(yminall+ymaxall);
 
  // add super triangle to the Del_Tri_mesh
 
@@ -528,7 +503,7 @@ void FixVolComp::post_force(int vflag)
 
   double temp_CC_mod[3] = {0.0};
 
-  Del_Tri_mesh.push_back({nall, nall+1, nall+2, 0});                      // add the super triangle which is flagged as intersecting (0)
+  Del_Tri_mesh.push_back({nall, nall+1, nall+2, 0});  // add the super triangle which is flagged as intersecting (0)
   double temp_CC[3] = {0.0};
   calc_cc(coords_array, Del_Tri_mesh[0], temp_CC);
   Del_Tri_cc.push_back({temp_CC[0], temp_CC[1], temp_CC[2]});
@@ -675,7 +650,7 @@ void FixVolComp::post_force(int vflag)
                                  0.0};
           double cp[3] = {0};
           double N[3] = {0,0,1}; // normal vector to the plane of cell layer (2D)
-          getCP(cp,rprevnext,N);
+          MathExtra::cross3(rprevnext,N,cp);
           
           double drmu_dri[3][3] = {0.0};
           Jacobian(x, Del_Tri_mesh[current_vert], i, drmu_dri);                      
@@ -683,7 +658,7 @@ void FixVolComp::post_force(int vflag)
           double result_t1[3] = {0};
           
           // Term 1 forces
-          vector_matrix(result_t1, cp, drmu_dri);
+          MathExtra::transpose_matvec(drmu_dri, cp, result_t1);
           vertex_force_sum_t1[0] += result_t1[0];
           vertex_force_sum_t1[1] += result_t1[1];
           vertex_force_sum_t1[2] += result_t1[2];
@@ -713,13 +688,6 @@ void FixVolComp::post_force(int vflag)
     f[i][1] += fy;
     f[i][2] += fz;
     if (evflag) {
-      // domain->unmap(x[i], image[i], unwrap);
-      // vir[0] = fx * unwrap[0];
-      // vir[1] = fy * unwrap[1];
-      // vir[2] = fz * unwrap[2];
-      // vir[3] = fx * unwrap[1];
-      // vir[4] = fy * unwrap[2];
-      // vir[5] = fz * unwrap[2];
       v_tally(i, vir);
     }
   }
@@ -783,4 +751,15 @@ void FixVolComp::unpack_forward_comm(int n, int first, double *buf)
   }
 }
 
+/* ----------------------------------------------------------------------
+   memory usage of local atom-based arrays
+------------------------------------------------------------------------- */
 
+double FixVolComp::memory_usage()
+{
+  int nmax = atom->nmax;
+  double bytes = (double)nmax*4 * sizeof(double);
+  // bytes += (double)nmax*3 * sizeof(double);
+  // bytes += (double)nmax*4 * sizeof(int);
+  return bytes;
+}

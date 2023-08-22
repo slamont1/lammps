@@ -243,6 +243,7 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
 
   if (yielding) {
     Fr = Kr1_type * ( Kr2_type * eps_temp * r0_mag + epsK1K2_type * Kr1_type * r0_mag ) / (Kr1_type + Kr2_type);
+    Fr = Kr2_type * eps_temp * r0_mag + epsK1K2_type * r0_mag * (Kr1_type - Kr2_type);
   } else {
     Fr = Kr1_type * (r_mag - r0_mag);
   }

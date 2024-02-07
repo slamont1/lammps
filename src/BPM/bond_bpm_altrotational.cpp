@@ -11,7 +11,7 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-#include "bond_bpm_bilinear.h"
+#include "bond_bpm_altrotational.h"
 
 #include "atom.h"
 #include "comm.h"
@@ -28,7 +28,7 @@
 #include <cmath>
 #include <cstring>
 
-#define EPSILON 1e-10
+static constexpr double EPSILON = 1e-10;
 
 using namespace LAMMPS_NS;
 using MathConst::MY_SQRT2;
@@ -43,10 +43,10 @@ static double acos_limit(double c)
 
 /* ---------------------------------------------------------------------- */
 
-BondBPMBilinear::BondBPMBilinear(LAMMPS *_lmp) :
+BondBPMAltrotational::BondBPMAltrotational(LAMMPS *_lmp) :
     BondBPM(_lmp), Kr(nullptr), Ks(nullptr), Kt(nullptr), Kb(nullptr), gnorm(nullptr),
     gslide(nullptr), groll(nullptr), gtwist(nullptr), Fcr(nullptr), Fcs(nullptr), Tct(nullptr),
-    Tcb(nullptr), Kr2(nullptr), Ks2(nullptr), epsK1K2(nullptr)
+    Tcb(nullptr)
 {
   partial_flag = 1;
   smooth_flag = 1;
@@ -58,7 +58,7 @@ BondBPMBilinear::BondBPMBilinear(LAMMPS *_lmp) :
 
 /* ---------------------------------------------------------------------- */
 
-BondBPMBilinear::~BondBPMBilinear()
+BondBPMAltrotational::~BondBPMAltrotational()
 {
   delete[] svector;
 
@@ -66,9 +66,6 @@ BondBPMBilinear::~BondBPMBilinear()
     memory->destroy(setflag);
     memory->destroy(Kr);
     memory->destroy(Ks);
-    memory->destroy(Kr2);
-    memory->destroy(Ks2);
-    memory->destroy(epsK1K2);
     memory->destroy(Kt);
     memory->destroy(Kb);
     memory->destroy(Fcr);
@@ -86,7 +83,7 @@ BondBPMBilinear::~BondBPMBilinear()
   Store data for a single bond - if bond added after LAMMPS init (e.g. pour)
 ------------------------------------------------------------------------- */
 
-double BondBPMBilinear::store_bond(int n, int i, int j)
+double BondBPMAltrotational::store_bond(int n, int i, int j)
 {
   double delx, dely, delz, r, rinv;
   double **x = atom->x;
@@ -140,7 +137,7 @@ double BondBPMBilinear::store_bond(int n, int i, int j)
   Store data for all bonds called once
 ------------------------------------------------------------------------- */
 
-void BondBPMBilinear::store_data()
+void BondBPMAltrotational::store_data()
 {
   int i, j, m, type;
   double delx, dely, delz, r, rinv;
@@ -191,7 +188,7 @@ void BondBPMBilinear::store_data()
     2) P. Mora & Y. Wang Advances in Geomcomputing 2009
 ---------------------------------------------------------------------- */
 
-double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, double r0_mag,
+double BondBPMAltrotational::elastic_forces(int i1, int i2, int type, double r_mag, double r0_mag,
                                          double r_mag_inv, double * /*rhat*/, double *r, double *r0,
                                          double *force1on2, double *torque1on2, double *torque2on1)
 {
@@ -208,16 +205,11 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
 
   double **quat = atom->quat;
   double r0_mag_inv = 1.0 / r0_mag;
-  double Kr1_type = Kr[type];
-  double Ks1_type = Ks[type];
-  double Kr2_type = Kr2[type];
-  double Ks2_type = Ks2[type];
-  double epsK1K2_type  = epsK1K2[type];
+  double Kr_type = Kr[type];
+  double Ks_type = Ks[type];
   if (normalize_flag) {
-    Kr1_type *= r0_mag_inv;
-    Ks1_type *= r0_mag_inv;
-    Kr2_type *= r0_mag_inv;
-    Ks2_type *= r0_mag_inv;
+    Kr_type *= r0_mag_inv;
+    Ks_type *= r0_mag_inv;
   }
 
   q1[0] = quat[i1][0];
@@ -230,22 +222,10 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   q2[2] = quat[i2][2];
   q2[3] = quat[i2][3];
 
-  // Check transition strain for bilinear spring
-  double eps_temp = (r_mag - r0_mag)*r0_mag_inv;
-  int yielding = 0;
-  if (fabs(eps_temp) > epsK1K2_type) yielding = 1;
-
-  // printf("fabs: %f, yielding: %d \n",fabs(eps_temp),yielding);
-
   // Calculate normal forces, rb = bond vector in particle 1's frame
   MathExtra::qconjugate(q2, q2inv);
   MathExtra::quatrotvec(q2inv, r, rb);
-
-  if (yielding) {
-    Fr = Kr2_type * eps_temp * r0_mag + epsK1K2_type * r0_mag * (Kr1_type - Kr2_type);
-  } else {
-    Fr = Kr1_type * (r_mag - r0_mag);
-  }
+  Fr = Kr_type * (r_mag - r0_mag);
 
   MathExtra::scale3(Fr * r_mag_inv, rb, F_rot);
 
@@ -258,21 +238,13 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   MathExtra::cross3(rb, rb_x_r0, s);
   MathExtra::norm3(s);
 
-  if (yielding) {
-    MathExtra::scale3(Ks2_type * r_mag * gamma, s, Fs);
-  } else {
-    MathExtra::scale3(Ks1_type * r_mag * gamma, s, Fs);
-  }
+  MathExtra::scale3(Ks_type * r_mag * gamma, s, Fs);
 
   // Calculate torque due to tangential displacements
   MathExtra::cross3(r0, rb, t);
   MathExtra::norm3(t);
 
-  if (yielding) {
-    MathExtra::scale3(0.5 * r_mag * Ks2_type * r_mag * gamma, t, Ts);
-  } else {
-    MathExtra::scale3(0.5 * r_mag * Ks1_type * r_mag * gamma, t, Ts);
-  }
+  MathExtra::scale3(0.5 * r_mag * Ks_type * r_mag * gamma, t, Ts);
 
   // Relative rotation force/torque
   // Use representation of X'Y'Z' rotations from Wang, Mora 2009
@@ -352,23 +324,13 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   Ttp[1] = 0.0;
   Ttp[2] = Kt[type] * psi;
 
-  if (yielding) {
-    Fsp[0] = -0.5 * Ks2_type * r_mag * theta * cos_phi;
-    Fsp[1] = -0.5 * Ks2_type * r_mag * theta * sin_phi;
-    Fsp[2] = 0.0;
+  Fsp[0] = -0.5 * Ks_type * r_mag * theta * cos_phi;
+  Fsp[1] = -0.5 * Ks_type * r_mag * theta * sin_phi;
+  Fsp[2] = 0.0;
 
-    Tsp[0] = 0.25 * Ks2_type * r_mag * r_mag * theta * sin_phi;
-    Tsp[1] = -0.25 * Ks2_type * r_mag * r_mag * theta * cos_phi;
-    Tsp[2] = 0.0;
-  } else {
-    Fsp[0] = -0.5 * Ks1_type * r_mag * theta * cos_phi;
-    Fsp[1] = -0.5 * Ks1_type * r_mag * theta * sin_phi;
-    Fsp[2] = 0.0;
-
-    Tsp[0] = 0.25 * Ks1_type * r_mag * r_mag * theta * sin_phi;
-    Tsp[1] = -0.25 * Ks1_type * r_mag * r_mag * theta * cos_phi;
-    Tsp[2] = 0.0;
-  }
+  Tsp[0] = 0.25 * Ks_type * r_mag * r_mag * theta * sin_phi;
+  Tsp[1] = -0.25 * Ks_type * r_mag * r_mag * theta * cos_phi;
+  Tsp[2] = 0.0;
 
   // Rotate forces/torques back to 1st particle's frame
 
@@ -402,8 +364,42 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   Tt_mag = MathExtra::len3(Tt);
   Tb_mag = MathExtra::len3(Tb);
 
-  breaking = Fr / Fcr[type] + Fs_mag / Fcs[type] + Tb_mag / Tcb[type] + Tt_mag / Tct[type];
-  if (breaking < 0.0) breaking = 0.0;
+  // Determine breaking by strain criterion
+  double rx, ry, rz, r0x, r0y, r0z;
+  double r0x2, r0y2, r0z2, r0x3, r0y3, r0z3, r0x4, r0y4, r0z4;
+  double rx2, ry2, rz2;
+  double numer, denom;
+  double eps_eq;
+
+  rx = rb[0];
+  ry = rb[1];
+  rz = rb[2];
+  r0x = r0[0];
+  r0y = r0[1];
+  r0z = r0[2];
+
+  r0x2 = pow(r0x,2);
+  r0y2 = pow(r0y,2);
+  r0z2 = pow(r0z,2);
+
+  r0x3 = pow(r0x,3);
+  r0y3 = pow(r0y,3);
+  r0z3 = pow(r0z,3);
+
+  r0x4 = pow(r0x,4);
+  r0y4 = pow(r0y,4);
+  r0z4 = pow(r0z,4);
+
+  rx2 = pow(rx,2);
+  ry2 = pow(ry,2);
+  rz2 = pow(rz,2);
+
+  numer = 3.0*r0x2*r0y4 + 3.0*r0x4*r0y2 + 3.0*r0x2*r0z4 + 3.0*r0x4*r0z2 + 3.0*r0y2*r0z4 + 3.0*r0y4*r0z2 - 6.0*r0x3*r0y2*rx + 3.0*r0x2*r0y2*rx2 - 6.0*r0x3*r0z2*rx + 3.0*r0x2*r0z2*rx2 + 2.0*r0y2*r0z2*rx2 - 6.0*r0x2*r0y3*ry + 3.0*r0x2*r0y2*ry2 + 2.0*r0x2*r0z2*ry2 - 6.0*r0y3*r0z2*ry + 3.0*r0y2*r0z2*ry2 + 2.0*r0x2*r0y2*rz2 - 6.0*r0x2*r0z3*rz + 3.0*r0x2*r0z2*rz2 - 6.0*r0y2*r0z3*rz + 3.0*r0y2*r0z2*rz2 - 2.0*r0x*r0y*r0z2*rx*ry - 2.0*r0x*r0y2*r0z*rx*rz - 2.0*r0x2*r0y*r0z*ry*rz;
+  denom = 3.0*r0x2*r0y2*r0z2;
+  eps_eq = pow(1.5*numer/denom,0.5);
+
+  breaking = 0.0;
+  if (eps_eq >= Fcr[type]) breaking = 1.0;
 
   return breaking;
 }
@@ -414,7 +410,7 @@ double BondBPMBilinear::elastic_forces(int i1, int i2, int type, double r_mag, d
   Note: n points towards 1 vs pointing towards 2
 ---------------------------------------------------------------------- */
 
-void BondBPMBilinear::damping_forces(int i1, int i2, int type, double *rhat, double *r,
+void BondBPMAltrotational::damping_forces(int i1, int i2, int type, double *rhat, double *r,
                                        double *force1on2, double *torque1on2, double *torque2on1)
 {
   double v1dotr, v2dotr, w1dotr, w2dotr;
@@ -488,7 +484,7 @@ void BondBPMBilinear::damping_forces(int i1, int i2, int type, double *rhat, dou
 
 /* ---------------------------------------------------------------------- */
 
-void BondBPMBilinear::compute(int eflag, int vflag)
+void BondBPMAltrotational::compute(int eflag, int vflag)
 {
 
   if (!fix_bond_history->stored_flag) {
@@ -605,16 +601,13 @@ void BondBPMBilinear::compute(int eflag, int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void BondBPMBilinear::allocate()
+void BondBPMAltrotational::allocate()
 {
   allocated = 1;
   const int np1 = atom->nbondtypes + 1;
 
   memory->create(Kr, np1, "bond:Kr");
   memory->create(Ks, np1, "bond:Ks");
-  memory->create(Kr2, np1, "bond:Kr2");
-  memory->create(Ks2, np1, "bond:Ks2");
-  memory->create(epsK1K2, np1, "bond:epsK1K2");
   memory->create(Kt, np1, "bond:Kt");
   memory->create(Kb, np1, "bond:Kb");
   memory->create(Fcr, np1, "bond:Fcr");
@@ -634,9 +627,9 @@ void BondBPMBilinear::allocate()
    set coeffs for one or more types
 ------------------------------------------------------------------------- */
 
-void BondBPMBilinear::coeff(int narg, char **arg)
+void BondBPMAltrotational::coeff(int narg, char **arg)
 {
-  if (narg != 16) error->all(FLERR, "Incorrect args for bond coefficients");
+  if (narg != 13) error->all(FLERR, "Incorrect args for bond coefficients");
   if (!allocated) allocate();
 
   int ilo, ihi;
@@ -654,18 +647,13 @@ void BondBPMBilinear::coeff(int narg, char **arg)
   double gslide_one = utils::numeric(FLERR, arg[10], false, lmp);
   double groll_one = utils::numeric(FLERR, arg[11], false, lmp);
   double gtwist_one = utils::numeric(FLERR, arg[12], false, lmp);
-  double Kr2_one = utils::numeric(FLERR, arg[13], false, lmp);
-  double Ks2_one = utils::numeric(FLERR, arg[14], false, lmp);
-  double epsK1K2_one = utils::numeric(FLERR, arg[15], false, lmp);
 
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
-    Kr[i]  = Kr_one;
-    Ks[i]  = Ks_one;
-    Kr2[i] = Kr2_one;
-    Ks2[i] = Ks2_one;
-    Kt[i]  = Kt_one;
-    Kb[i]  = Kb_one;
+    Kr[i] = Kr_one;
+    Ks[i] = Ks_one;
+    Kt[i] = Kt_one;
+    Kb[i] = Kb_one;
     Fcr[i] = Fcr_one;
     Fcs[i] = Fcs_one;
     Tct[i] = Tct_one;
@@ -674,11 +662,10 @@ void BondBPMBilinear::coeff(int narg, char **arg)
     gslide[i] = gslide_one;
     groll[i] = groll_one;
     gtwist[i] = gtwist_one;
-    epsK1K2[i]  = epsK1K2_one;
     setflag[i] = 1;
     count++;
 
-    if (Fcr[i] / Kr[i] > max_stretch) max_stretch = Fcr[i] / Kr[i];
+    if ((1.0+Fcr[i]) > max_stretch) max_stretch = (1.0+Fcr[i]);
   }
 
   if (count == 0) error->all(FLERR, "Incorrect args for bond coefficients");
@@ -688,17 +675,17 @@ void BondBPMBilinear::coeff(int narg, char **arg)
    check for correct settings and create fix
 ------------------------------------------------------------------------- */
 
-void BondBPMBilinear::init_style()
+void BondBPMAltrotational::init_style()
 {
   BondBPM::init_style();
 
   if (!atom->quat_flag || !atom->radius_flag || !atom->omega_flag)
-    error->all(FLERR, "Bond bpm/bilinear requires atom style bpm/sphere");
+    error->all(FLERR, "Bond bpm/rotational requires atom style bpm/sphere");
   if (comm->ghost_velocity == 0)
-    error->all(FLERR, "Bond bpm/bilinear requires ghost atoms store velocity");
+    error->all(FLERR, "Bond bpm/rotational requires ghost atoms store velocity");
 
   if (domain->dimension == 2)
-    error->warning(FLERR, "Bond style bpm/bilinear not intended for 2d use");
+    error->warning(FLERR, "Bond style bpm/rotational not intended for 2d use");
 
   if (!id_fix_bond_history) {
     id_fix_bond_history = utils::strdup("HISTORY_BPM_ROTATIONAL");
@@ -711,7 +698,7 @@ void BondBPMBilinear::init_style()
 
 /* ---------------------------------------------------------------------- */
 
-void BondBPMBilinear::settings(int narg, char **arg)
+void BondBPMAltrotational::settings(int narg, char **arg)
 {
   BondBPM::settings(narg, arg);
 
@@ -736,15 +723,13 @@ void BondBPMBilinear::settings(int narg, char **arg)
    proc 0 writes out coeffs to restart file
 ------------------------------------------------------------------------- */
 
-void BondBPMBilinear::write_restart(FILE *fp)
+void BondBPMAltrotational::write_restart(FILE *fp)
 {
   BondBPM::write_restart(fp);
   write_restart_settings(fp);
 
   fwrite(&Kr[1], sizeof(double), atom->nbondtypes, fp);
   fwrite(&Ks[1], sizeof(double), atom->nbondtypes, fp);
-  fwrite(&Kr2[1], sizeof(double), atom->nbondtypes, fp);
-  fwrite(&Ks2[1], sizeof(double), atom->nbondtypes, fp);
   fwrite(&Kt[1], sizeof(double), atom->nbondtypes, fp);
   fwrite(&Kb[1], sizeof(double), atom->nbondtypes, fp);
   fwrite(&Fcr[1], sizeof(double), atom->nbondtypes, fp);
@@ -755,14 +740,13 @@ void BondBPMBilinear::write_restart(FILE *fp)
   fwrite(&gslide[1], sizeof(double), atom->nbondtypes, fp);
   fwrite(&groll[1], sizeof(double), atom->nbondtypes, fp);
   fwrite(&gtwist[1], sizeof(double), atom->nbondtypes, fp);
-  fwrite(&epsK1K2[1], sizeof(double), atom->nbondtypes, fp);
 }
 
 /* ----------------------------------------------------------------------
    proc 0 reads coeffs from restart file, bcasts them
 ------------------------------------------------------------------------- */
 
-void BondBPMBilinear::read_restart(FILE *fp)
+void BondBPMAltrotational::read_restart(FILE *fp)
 {
   BondBPM::read_restart(fp);
   read_restart_settings(fp);
@@ -771,8 +755,6 @@ void BondBPMBilinear::read_restart(FILE *fp)
   if (comm->me == 0) {
     utils::sfread(FLERR, &Kr[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
     utils::sfread(FLERR, &Ks[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
-    utils::sfread(FLERR, &Kr2[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
-    utils::sfread(FLERR, &Ks2[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
     utils::sfread(FLERR, &Kt[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
     utils::sfread(FLERR, &Kb[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
     utils::sfread(FLERR, &Fcr[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
@@ -783,12 +765,9 @@ void BondBPMBilinear::read_restart(FILE *fp)
     utils::sfread(FLERR, &gslide[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
     utils::sfread(FLERR, &groll[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
     utils::sfread(FLERR, &gtwist[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
-    utils::sfread(FLERR, &epsK1K2[1], sizeof(double), atom->nbondtypes, fp, nullptr, error);
   }
   MPI_Bcast(&Kr[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&Ks[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&Kr2[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&Ks2[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&Kt[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&Kb[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&Fcr[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
@@ -799,7 +778,6 @@ void BondBPMBilinear::read_restart(FILE *fp)
   MPI_Bcast(&gslide[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&groll[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
   MPI_Bcast(&gtwist[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&epsK1K2[1], atom->nbondtypes, MPI_DOUBLE, 0, world);
 
   for (int i = 1; i <= atom->nbondtypes; i++) setflag[i] = 1;
 }
@@ -808,7 +786,7 @@ void BondBPMBilinear::read_restart(FILE *fp)
    proc 0 writes to restart file
  ------------------------------------------------------------------------- */
 
-void BondBPMBilinear::write_restart_settings(FILE *fp)
+void BondBPMAltrotational::write_restart_settings(FILE *fp)
 {
   fwrite(&smooth_flag, sizeof(int), 1, fp);
 }
@@ -817,7 +795,7 @@ void BondBPMBilinear::write_restart_settings(FILE *fp)
     proc 0 reads from restart file, bcasts
  ------------------------------------------------------------------------- */
 
-void BondBPMBilinear::read_restart_settings(FILE *fp)
+void BondBPMAltrotational::read_restart_settings(FILE *fp)
 {
   if (comm->me == 0) utils::sfread(FLERR, &smooth_flag, sizeof(int), 1, fp, nullptr, error);
   MPI_Bcast(&smooth_flag, 1, MPI_INT, 0, world);
@@ -825,7 +803,7 @@ void BondBPMBilinear::read_restart_settings(FILE *fp)
 
 /* ---------------------------------------------------------------------- */
 
-double BondBPMBilinear::single(int type, double rsq, int i, int j, double &fforce)
+double BondBPMAltrotational::single(int type, double rsq, int i, int j, double &fforce)
 {
   // Not yet enabled
   if (type <= 0) return 0.0;

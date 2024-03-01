@@ -47,7 +47,7 @@ class FixBondDynamic : public Fix {
   int imaxbond, jmaxbond, maxbond;
   double cutsq, prob_attach, prob_detach, f0, ka, kd, DT_EQ;
   double ka0, kd0, b0, b2, r_critical, r2_critical;
-  int flag_bell, flag_prob, flag_rouse, flag_critical, flag_mol, flag_skip;
+  int flag_prob, flag_critical, flag_mol, flag_skip;
   int skip;
 
   int overflow;

@@ -76,8 +76,6 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
 
   jatomtype = iatomtype;
   flag_prob = 0;
-  flag_bell = 0;
-  flag_rouse = 0;
   flag_critical = 0;
   flag_mol = 0;
   flag_skip = 0;
@@ -111,26 +109,11 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
       maxbond = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       if (maxbond < 0) error->all(FLERR,"Illegal fix bond/dynamic command");
       iarg += 2;
-    } else if (strcmp(arg[iarg],"bell") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
-      f0 = utils::numeric(FLERR,arg[iarg+1],false,lmp);
-      flag_bell = 1;
-      iarg += 2;
-    } else if (strcmp(arg[iarg],"rouse") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
-      b0 = utils::numeric(FLERR,arg[iarg+1],false,lmp);
-      b2 = b0*b0;
-      flag_rouse = 1;
-      iarg += 2;
     } else if (strcmp(arg[iarg],"critical") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
       r_critical = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       r2_critical = r_critical*r_critical;
       flag_critical = 1;
-      iarg += 2;
-    } else if (strcmp(arg[iarg],"jtype") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
-      jatomtype = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       iarg += 2;
     } else if (strcmp(arg[iarg],"mol") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/dynamic command");
@@ -145,9 +128,6 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
   }
 
   // error checks
-
-  if (flag_prob && flag_bell)
-    error->all(FLERR,"Cannot use argument prob with argument bell");
   if (atom->molecular != Atom::MOLECULAR)
     error->all(FLERR,"Cannot use fix bond/dynamic with non-molecular systems");
   if (atom->bond_per_atom < maxbond)
@@ -314,7 +294,7 @@ void FixBondDynamic::setup(int /*vflag*/)
     if (num_bond[i] == 0) continue;
     for (j = 0; j < num_bond[i]; j++) {
        if (bond_type[i][j] == btype) {
-        fbd[i][j] = bond_atom[i][j]; // ADD OPTION FOR INCLUDING OUTSIDE ATOMS OR NOT DIRECTLY
+        fbd[i][j] = bond_atom[i][j];
        }
     }
   }
@@ -375,9 +355,6 @@ void FixBondDynamic::post_integrate()
   int *type = atom->type;
   Bond *bond = force->bond;
   DT_EQ = (update->dt)*nevery;
-  // JTC: Probably not worth worrying about, but this definition of DT_EQ won't be
-  // compatible with a variable timestep like that used in fix dt/reset.
-  // Not sure there's a great solution (maybe incrementing?) or a good error check
 
   /* BEGIN BREAKING PROCESS */
   // loop over local atoms
@@ -412,16 +389,6 @@ void FixBondDynamic::post_integrate()
       probability = random->uniform();
 
       prob_detach = 1 - exp(-kd0*DT_EQ);
-      if (flag_bell) {
-        delx = xtmp - x[j][0];
-        dely = ytmp - x[j][1];
-        delz = ztmp - x[j][2];
-        domain->minimum_image(delx, dely, delz);
-        rsq = delx*delx + dely*dely + delz*delz;
-        engpot = bond->single(btype,rsq,i,j,fbond);
-        kd = kd0*exp(abs(fbond)/f0);
-        prob_detach = 1 - exp(-kd*DT_EQ);
-      }
       if (flag_critical) {
         delx = xtmp - x[j][0];
         dely = ytmp - x[j][1];
@@ -598,10 +565,6 @@ void FixBondDynamic::post_integrate()
       probability = random->uniform();
 
       if (!flag_prob) prob_attach = 1.0 - exp(-ka0*DT_EQ);
-      if (flag_rouse) {
-        ka = ka0*pow(b2/rsq,2);
-        prob_attach = 1 - exp(-ka*DT_EQ);
-      }
 
       // No reason to consider this if it will be unsuccessful
       if (probability > prob_attach) continue;

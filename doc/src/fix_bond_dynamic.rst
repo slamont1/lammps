@@ -19,22 +19,23 @@ Syntax
 * kd = reverse kinetic rate of bond deletion (inverse time units)
 * cutoff = 2 atoms separated by less than cutoff can bond (distance units)
 * zero or more keyword/value pairs may be appended to args
-* keyword = *maxbond* or *bell* or *rouse* or *prob* or *critical*
+* keyword = *maxbond* or *mol* or *prob* or *critical* or *skip*
 
   .. parsed-literal::
 
-       *maxbond* values = Nbonds
+      *maxbond* values = Nbonds
          Nbonds = max # of bonds of bondtype each atom can have
-        *bell* values = force_ref
-         force_ref = reference force for accelerated detachment (force units)
-        *rouse* values = length_ref
-         length_ref = reference length for Rouse diffusion
-        *prob* values = prob_attach, prob_detach, seed
+      *mol* values = flag_mol
+         flag_mol = 0 or 1 to consider atoms on the same molecule
+      *prob* values = prob_attach, prob_detach, seed
          prob_attach = create a bond with this probability if otherwise eligible
          prob_detach = delete a bond with this probability if otherwise eligible
          seed = random number seed (positive integer)
-        *critical* values = length_critical
+      *critical* values = length_critical
          length_critical = critical length after which a bond permanently breaks
+      *skip* values = Nevery_skip
+         Nevery_skip = skip dynamic bonding on multiples of Nevery_skip
+      
 
 Examples
 """"""""
@@ -85,29 +86,6 @@ atom may store. This could be used to model systems in which both static and
 dynamic bonds may exist. In this case, the max/bonds/per/atom must be greater
 than the sum of *maxbond* and the number of static bonds on an atom.
 
-The *Bell* keyword may be used to accelerate the kinetic rate of detachment
-with added force on the bond. The form is assumed to follow Bell's Law, 
-introduced by Bell in [REF]. If this keyword is used, the rate of detachment
-follows the relationship:
-
-.. math::
-
-   k_d = k_d,0 * exp(f/f_0),
-   
-where *k_d,0* is the user-input *kd*, *f* is the current force stored in the bond,
-and *f_0* is the reference force defined by *force_ref*.
-
-The *Rouse* keyword may be used to incorporate a Rouse-like diffusion model into the
-attachment algorithm. The kinetic rate of attachment is assumed to scale according
-to a power-law of the form:
-
-.. math::
-
-   k_a = k_a,0 * (b/d)^4,
-   
-where *k_a,0* is the user-input *ka*, *b* is user-defined reference length defined by
-*length_ref*, and *d* is the distance between two atoms.
-
 If the *prob* keyword is used, the rates *ka* and *kd* are not considered. Instead,
 each creation and deletion event is considered with probabilities *prob_attach* and
 *prob_detach*, respectively.
@@ -116,6 +94,13 @@ If the *critical* keywork is used, bonds are deleted once they have reached a le
 *length_critical*. The maximum number of bonds in the atoms storing this bond will be 
 decreased by one, ensuring irreversible breaking. This is akin to breaking polymer chains
 by scission.
+
+The *mol* keyword may be used to consider creating bonds between atoms on the same molecule.
+Setting the flag to 1 means do not consider bond creation between atoms on the same molecule.
+
+The *skip* keyword may be used to skip the dynamic bonding algorithms when the timestep
+is on a multiple of keyword *Nevery_skip*. This can be used to distinguish bewteen
+'quasi-time' timesteps and real timesteps when attempting to load in quasi-static conditions.
 
 Any bond that is created is assigned a bond type of *bondtype*. When a bond is created, 
 data structures within LAMMPS that store bond topology are updated to reflect the
@@ -211,4 +196,4 @@ Related commands
 Default
 """""""
 
-The option defaults are maxbond = max/bond/per/atom
+The option defaults are maxbond = max/bond/per/atom and flag_mol = 0

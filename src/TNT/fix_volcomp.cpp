@@ -178,15 +178,15 @@ void FixVolComp::min_setup(int vflag)
 
 //Function Description: get the circumcircle of a triangle
 
-void calc_cc(double coords_array[][2], const vector<int>& v1,  double *CC)
+void FixVolComp::calc_cc(double *xn, double *yn,  double *CC)
 {
-  double x0 = coords_array[v1[0]][0];
-  double x1 = coords_array[v1[1]][0];
-  double x2 = coords_array[v1[2]][0];
+  double x0 = xn[0];
+  double x1 = xn[1];
+  double x2 = xn[2];
 
-  double y0 = coords_array[v1[0]][1];
-  double y1 = coords_array[v1[1]][1];
-  double y2 = coords_array[v1[2]][1];
+  double y0 = yn[0];
+  double y1 = yn[1];
+  double y2 = yn[2];
 
   double a = sqrt(pow(x2-x1,2)+pow(y2-y1,2));
   double b = sqrt(pow(x2-x0,2)+pow(y2-y0,2));
@@ -203,7 +203,9 @@ void calc_cc(double coords_array[][2], const vector<int>& v1,  double *CC)
   CC[2] = sqrt(pow(CC[0]-x0,2)+pow(CC[1]-y0,2));  // radius of circumcircle
 }
 
+/* ---------------------------------------------------------------------- */
 //Function decription: check if a point lies inside the circumcircle
+/* ---------------------------------------------------------------------- */
 
 int InsideCC(double **x, int i, const vector<double> &v){
     // find circum circle for the potential DT:
@@ -213,7 +215,9 @@ int InsideCC(double **x, int i, const vector<double> &v){
   else return 0;
 }
 
+/* ---------------------------------------------------------------------- */
 //FUnction decription: if edge is an internal/shared edge for polygon or not
+/* ---------------------------------------------------------------------- */
 
 int edgeshared(const vector<vector<int>> &v,int k, int kk){
 
@@ -246,7 +250,9 @@ for (int i = 0; i < v.size(); i++){
 return 0;
 }
  
-// function description: Order the vertices in CCW manner  
+ /* ---------------------------------------------------------------------- */
+// function description: Order the vertices in CCW manner 
+/* ---------------------------------------------------------------------- */
 
  void order_vertices_list (vector<int>& cvl, const vector<vector<double>> &dtcc, int cid){
 
@@ -266,7 +272,9 @@ return 0;
 
   double theta[cvl.size()], theta_sorted[cvl.size()];
 
-  // compute angles of remaining vertices w.r.t the first vertex
+/* ---------------------------------------------------------------------- */
+// function description: compute angles of remaining vertices w.r.t the first vertex
+/* ---------------------------------------------------------------------- */
 
   for (int i = 0; i < cvl.size(); i++){
     if (cvl[i] != first){
@@ -296,7 +304,9 @@ return 0;
 
 }
 
+/* ---------------------------------------------------------------------- */
 // function description: get voronoi neighbors list (local ids) for an owned atom
+/* ---------------------------------------------------------------------- */
 
 void get_voro_neighs(int i, const vector<vector<int>> &DTmesh, const vector<int> &cvl, vector<int> &cnl){
 
@@ -399,6 +409,9 @@ void FixVolComp::post_force(int vflag)
   int nghost = atom->nghost;
   int nall = nlocal + nghost;
 
+  double xn[3], yn[3];
+  double x0, x1, x2, y0, y1, y2;
+
   if (update->ntimestep % nevery) return;
 
   // virial setup
@@ -485,27 +498,38 @@ void FixVolComp::post_force(int vflag)
  double xcen = 0.5*(xminall+xmaxall); 
  double ycen = 0.5*(yminall+ymaxall);
 
- // add super triangle to the Del_Tri_mesh
+ // Save coordinates of the super triangle
 
- double coords_array[nall+3][2] = {0.0};
+ double coords_super[3][2];
+ coords_super[0][0] = xcen-0.866*dmax;
+ coords_super[0][1] = ycen-0.5*dmax;
+ coords_super[1][0] = xcen+0.866*dmax;
+ coords_super[1][1] = ycen-0.5*dmax;
+ coords_super[2][0] = xcen;
+ coords_super[2][1] = ycen+dmax;
 
- for (int i = 0; i < nall; i++){
-  coords_array[i][0] = x[i][0];
-  coords_array[i][1] = x[i][1];
- }
+  // Initialize the mesh
 
- coords_array[nall][0] = xcen-0.866*dmax;
- coords_array[nall][1] = ycen-0.5*dmax;
- coords_array[nall+1][0] = xcen+0.866*dmax;
- coords_array[nall+1][1] = ycen-0.5*dmax;
- coords_array[nall+2][0] = xcen;
- coords_array[nall+2][1] = ycen+dmax;
-
-  double temp_CC_mod[3] = {0.0};
-
-  Del_Tri_mesh.push_back({nall, nall+1, nall+2, 0});  // add the super triangle which is flagged as intersecting (0)
+  Del_Tri_mesh.push_back({nall, nall+1, nall+2, 0});
   double temp_CC[3] = {0.0};
-  calc_cc(coords_array, Del_Tri_mesh[0], temp_CC);
+  int id_tri;
+  for (int i = 0; i < 3; i++) {
+    id_tri = Del_Tri_mesh[0][i];
+    if (id_tri == nall) {
+      xn[i] = coords_super[0][0];
+      yn[i] = coords_super[0][1];
+    } else if (id_tri == nall+1) {
+      xn[i] = coords_super[1][0];
+      yn[i] = coords_super[1][1];
+    } else if (id_tri == nall+2) {
+      xn[i] = coords_super[2][0];
+      yn[i] = coords_super[2][1];
+    } else {
+      xn[i] = x[id_tri][0];
+      yn[i] = x[id_tri][1];
+    }
+  }
+  calc_cc(xn, yn, temp_CC);
   Del_Tri_cc.push_back({temp_CC[0], temp_CC[1], temp_CC[2]});
 
  for (int i = 0; i < nall; i++){
@@ -545,7 +569,24 @@ void FixVolComp::post_force(int vflag)
 
   for (int m=0; m < bound_edge.size(); m++){                           
     Del_Tri_mesh.push_back({i, bound_edge[m][0], bound_edge[m][1], 0});  
-    calc_cc(coords_array, Del_Tri_mesh[Del_Tri_mesh.size()-1], temp_CC);
+
+    for (int i = 0; i < 3; i++) {
+      id_tri = Del_Tri_mesh[Del_Tri_mesh.size()-1][i];
+      if (id_tri == nall) {
+        xn[i] = coords_super[0][0];
+        yn[i] = coords_super[0][1];
+      } else if (id_tri == nall+1) {
+        xn[i] = coords_super[1][0];
+        yn[i] = coords_super[1][1];
+      } else if (id_tri == nall+2) {
+        xn[i] = coords_super[2][0];
+        yn[i] = coords_super[2][1];
+      } else {
+        xn[i] = x[id_tri][0];
+        yn[i] = x[id_tri][1];
+      }
+    }
+    calc_cc(xn, yn, temp_CC);
     Del_Tri_cc.push_back({temp_CC[0], temp_CC[1], temp_CC[2]});
    } 
  }
@@ -593,7 +634,6 @@ void FixVolComp::post_force(int vflag)
   //   printf("nlocal: %d, voro: %f \n",nlocal,fstore->vector_atom[i]);
   // }
 
-  double unwrap[3];
   double rvec[3];
   for(int i = 0; i < nlocal; i++){
     if (mask[i] & groupbit){
@@ -662,7 +702,7 @@ void FixVolComp::post_force(int vflag)
           vertex_force_sum_t1[0] += result_t1[0];
           vertex_force_sum_t1[1] += result_t1[1];
           vertex_force_sum_t1[2] += result_t1[2];
-      }      
+        }
         vcount++;
       }
       F_t1[0] += elasticity_area*vertex_force_sum_t1[0];

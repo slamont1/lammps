@@ -47,6 +47,8 @@ class FixVolComp : public Fix {
  int me, nprocs; 
  int nmax;
 
+ void calc_cc(double *, double *, double *);
+
  private:
   
   class Compute *vcompute; // ptr to compute voronoi

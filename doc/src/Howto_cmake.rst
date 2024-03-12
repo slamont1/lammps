@@ -1,10 +1,10 @@
-Using CMake with LAMMPS tutorial
-================================
+Using CMake with LAMMPS
+=======================
 
 The support for building LAMMPS with CMake is a recent addition to
 LAMMPS thanks to the efforts of Christoph Junghans (LANL) and Richard
 Berger (LANL).  One of the key strengths of CMake is that it is not
-tied to a specific platform or build system and thus it generates the
+tied to a specific platform or build system. Instead it generates the
 files necessary to build and develop for different build systems and on
 different platforms.  Note, that this applies to the build system itself
 not the LAMMPS code. In other words, without additional porting effort,
@@ -32,7 +32,8 @@ program ``cmake`` (or ``cmake3``), a text mode interactive user
 interface (TUI) program ``ccmake`` (or ``ccmake3``), or a graphical user
 interface (GUI) program ``cmake-gui``.  All of them are portable
 software available on all supported platforms and can be used
-interchangeably.  The minimum required CMake version is 3.16.
+interchangeably.  As of LAMMPS version 2 August 2023, the minimum
+required CMake version is 3.16.
 
 All details about features and settings for CMake are in the `CMake
 online documentation <https://cmake.org/documentation/>`_. We focus
@@ -348,6 +349,8 @@ Some common LAMMPS specific variables
      - when set to ``name`` the LAMMPS executable and library will be called ``lmp_name`` and ``liblammps_name.a``
    * - ``FFT``
      - select which FFT library to use: ``FFTW3``, ``MKL``, ``KISS`` (default, unless FFTW3 is found)
+   * - ``FFT_KOKKOS``
+     - select which FFT library to use in Kokkos-enabled styles: ``FFTW3``, ``MKL``, ``HIPFFT``, ``CUFFT``, ``KISS`` (default)
    * - ``FFT_SINGLE``
      - select whether to use single precision FFTs (default: ``off``)
    * - ``WITH_JPEG``

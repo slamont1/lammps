@@ -58,7 +58,7 @@ enum { NONE, CONSTANT, EQUAL, ATOM };
 /* ---------------------------------------------------------------------- */
 
 FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
-    Fix(lmp, narg, arg), pressure(nullptr), id_compute_voronoi(nullptr), total_virial(nullptr)
+    Fix(lmp, narg, arg), id_compute_voronoi(nullptr), total_virial(nullptr)
 {
   if (narg < 6) error->all(FLERR, "Illegal fix volvoro command: not sufficient args");
 
@@ -107,7 +107,6 @@ FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
 
   countflag = 0;
   nmax = atom->nmax;
-  pressure = nullptr;
   total_virial = nullptr;
 
 }
@@ -119,7 +118,6 @@ FixVolVoro::~FixVolVoro()
   delete[] id_compute_voronoi;
   delete[] id_fix_store;
   
-  memory->destroy(pressure);
   memory->destroy(total_virial);
 
   if (new_fix_id && modify->nfix) modify->delete_fix(new_fix_id);
@@ -242,12 +240,11 @@ void FixVolVoro::setup(int vflag)
   }
 
   // Communicate dtf
-  commflag = 2;
+//   commflag = 2;
   comm->forward_comm(this,max_faces);
     
   // Create memory allocations
   nmax = atom->nmax;
-  memory->create(pressure,nmax,"volvoro:pressure");
   memory->create(total_virial,nmax,6,"volvoro:total_virial");
 
   if (utils::strmatch(update->integrate_style, "^verlet"))
@@ -310,17 +307,13 @@ void FixVolVoro::post_force(int vflag)
 
   // Possibly resize arrays
   if (atom->nmax > nmax) {
-    memory->destroy(pressure);
     memory->destroy(total_virial);
-
     nmax = atom->nmax;
-    memory->create(pressure,nmax,"volvoro:pressure");
     memory->create(total_virial,nmax,6,"volvoro:total_virial");
   }
 
   // Initialize arrays to zero
   for (int i = 0; i < nall; i++) {
-    pressure[i] = 0.0;
     for (int j = 0; j < 5; j++) {
         total_virial[i][j] = 0.0;
     }
@@ -337,41 +330,30 @@ void FixVolVoro::post_force(int vflag)
   // Define pointer to fix_store
   if (flag_store_init) fstore = modify->get_fix_by_id(id_fix_store);
 
-  // Fill voro_volume and voro_volume0 with values from compute voronoi
-  double voro_volume, voro_volume0;
-  for (int i = 0; i < nlocal; i++) {
-    if (mask[i] & groupbit) {
-        voro_volume = vcompute->array_atom[i][0];
-    }
-    if (flag_store_init) {
-      if (mask[i] & groupbit) {
-        voro_volume0 = fstore->vector_atom[i];
-      } 
-    } else {
-        voro_volume0 = VolPref;
-    }
-
-    pressure[i] = Elasticity*(voro_volume-voro_volume0)*0.5;
-  }
-
-  // forward communication of pressure
-  commflag = 0;
-  comm->forward_comm(this,1);
-
   // Loop through local atoms:
   // 1. Apply force `on i from i'
   // 2. Apply force `on j from i'
   // 3. Apply force `on k from i'
   for (int i = 0; i < nlocal; i++) {
 
+    // Volume and pressure due to volume change
+    double voro_volume = vcompute->array_atom[i][0];
+    double voro_volume0;
+    if (flag_store_init) {
+        voro_volume0 = fstore->vector_atom[i];
+    } else {
+        voro_volume0 = VolPref;
+    }
+    double pressure = Elasticity*(voro_volume-voro_volume0)*0.5;
+
     // Declare variables inside loop for scope clarity
     double fx,fy;
     int j,jtmp,num_faces,jleft,jright;
     double x1,x2,y1,y2;
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~ Refresh vector arrays ~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~~~~~~~~ Refresh vector arrays ~~~~~~~~~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
     // Local ids of atoms in current triangulation
     int DT[3] = {0};
@@ -391,9 +373,9 @@ void FixVolVoro::post_force(int vflag)
     // Jacobian matrix (Voigt notation): J11, J22, J12, J21
     double Jac[4] = {0.0};
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~ Begin calculations ~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~~~~~~~~~~ Begin calculations ~~~~~~~~~~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
     // First entry of DT is always i
     DT[0] = i;
@@ -410,17 +392,9 @@ void FixVolVoro::post_force(int vflag)
     double x0 = x[i][0];
     double y0 = x[i][1];
 
-    // if (i == 0) {
-    //     printf("\n Particle 0 with tag  %d coords %f, %f \n",atom->tag[i],x0,y0);
-    //     printf("Number of faces: %d \n",num_faces);
-    //     for (n = 0; n < max_faces; n++) {
-    //         printf("Next face with tag %d \n",dtf[i][n]);
-    //     }
-    // }
-
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~ Calculate vertices ~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~~~~~~~~~ Calculate vertices ~~~~~~~~~~~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
     // Local id and coords of last face
     jtmp = atom->map(dtf[i][num_faces-1]);
@@ -430,9 +404,6 @@ void FixVolVoro::post_force(int vflag)
     j = domain->closest_image(i,jtmp);
     x1 = x[j][0];
     y1 = x[j][1];
-    // if (i == 0) {
-    //     printf("\n Last face with tag %d, local id %d and mirror id %d with coords: %f, %f \n",atom->tag[j],jtmp,j,x1,y1);
-    // }
 
     // Local id and coords of first face
     jtmp = atom->map(dtf[i][0]);
@@ -443,17 +414,11 @@ void FixVolVoro::post_force(int vflag)
     DT[1] = j;
     x2 = x[j][0];
     y2 = x[j][1];
-    // if (i == 0) {
-    //     printf("\n First face with tag %d, local id %d and mirror id %d with coords: %f, %f \n",atom->tag[j],jtmp,j,x2,y2);
-    // }
 
     // Circumcenter of previous vertex
     xn[0] = x0; xn[1] = x1; xn[2] = x2;
     yn[0] = y0; yn[1] = y1; yn[2] = y2;
     calc_cc(xn, yn, vert_prev);
-    // if (i == 0) {
-    //     printf("\n Found vertex at %f, %f \n",vert_prev[0],vert_prev[1]);
-    // }
     x1 = x2;
     y1 = y2;
 
@@ -466,17 +431,11 @@ void FixVolVoro::post_force(int vflag)
     DT[2] = j;
     x2 = x[j][0];
     y2 = x[j][1];
-    // if (i == 0) {
-    //     printf("\n Second face with tag %d, local id %d and mirror id %d with coords: %f, %f \n",atom->tag[j],jtmp,j,x2,y2);
-    // }
 
     // Circumcenter of current vertex
     xn[0] = x0; xn[1] = x1; xn[2] = x2;
     yn[0] = y0; yn[1] = y1; yn[2] = y2;
     calc_cc(xn, yn, vert);
-    // if (i == 0) {
-    //     printf("\n Found vertex at %f, %f \n",vert[0],vert[1]);
-    // }
     x1 = x2;
     y1 = y2;
 
@@ -489,9 +448,6 @@ void FixVolVoro::post_force(int vflag)
     j = domain->closest_image(i,jtmp);
     x2 = x[j][0];
     y2 = x[j][1];
-    // if (i == 0) {
-    //     printf("\n Third face with tag %d, local id %d and mirror id %d with coords: %f, %f \n",atom->tag[j],jtmp,j,x2,y2);
-    // }
 
     // Circumcenter of next vertex
     xn[0] = x0; xn[1] = x1; xn[2] = x2;
@@ -499,9 +455,6 @@ void FixVolVoro::post_force(int vflag)
     calc_cc(xn, yn, vert_next);
     x1 = x2;
     y1 = y2;
-    // if (i == 0) {
-    //     printf("\n Found vertex at %f, %f \n",vert_next[0],vert_next[1]);
-    // }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
     // ~~~~~~~~~~~~~~~~ Force calculation on cell i ~~~~~~~~~~~~~~~~~~~~~//
@@ -513,26 +466,16 @@ void FixVolVoro::post_force(int vflag)
 
     // Calculate jacobian on atom i (cell owner)
     Jacobian(DT,i,Jac);
-    // if (i == 0) {
-    //     printf("\n Calculated jacobian J11: %f, J22: %f, J12: %f, J21: %f \n",Jac[0][0],Jac[1][1],Jac[0][1],Jac[1][0]);
-    // }
 
     // Forces on i from current vertex
-    fx = -pressure[i]*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -pressure[i]*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+    fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+    fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
     f[i][0] += fx;
     f[i][1] += fy;
-
-    // if (atom->tag[i] == 190) {
-    //     printf("\n Atom 190 loc: %f, %f \n",x[i][0],x[i][1]);
-    //     printf("\n Force contribution: %f, %f \n",fx,fy);
-    // }
 
     // Vector for virial calculation
     rvec[0] = vert[0] - x[i][0];
     rvec[1] = vert[1] - x[i][1];
-    rvec[2] = 0.0;
-    // domain->minimum_image(rvec[0], rvec[1], rvec[2]);
 
     // Virial contributions
     total_virial[i][0] += fx*rvec[0];
@@ -547,30 +490,21 @@ void FixVolVoro::post_force(int vflag)
 
     // Calculate jacobian on atom jleft
     Jacobian(DT,jleft,Jac);
-    // if (i == 0) {
-    //     printf("\n Next Calculated jacobian J11: %f, J22: %f, J12: %f, J21: %f \n",Jac[0][0],Jac[1][1],Jac[0][1],Jac[1][0]);
-    // }
 
     // Forces on i from current vertex
-    fx = -pressure[i]*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -pressure[i]*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+    fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+    fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
     f[jleft][0] += fx;
     f[jleft][1] += fy;
 
     // Vector for virial calculation
     rvec[0] = vert[0] - x[jleft][0];
     rvec[1] = vert[1] - x[jleft][1];
-    rvec[2] = 0.0;
-    // domain->minimum_image(rvec[0], rvec[1], rvec[2]);
 
     // Virial contributions
     total_virial[jleft][0] -= fx*rvec[0];
     total_virial[jleft][1] -= fy*rvec[1];
     total_virial[jleft][3] -= fx*rvec[1];
-
-    // if (atom->tag[jleft] == 190) {
-    //     printf("\n Force contribution: %f, %f from atom %d \n",fx,fy,atom->tag[i]);
-    // }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
     // ~~~~~~~~~~~~~~~~ Force calculation on jright ~~~~~~~~~~~~~~~~~~~~~//
@@ -580,30 +514,21 @@ void FixVolVoro::post_force(int vflag)
 
     // Calculate jacobian on atom jright
     Jacobian(DT,jright,Jac);
-    // if (i == 0) {
-    //     printf("\n Next Calculated jacobian J11: %f, J22: %f, J12: %f, J21: %f \n",Jac[0][0],Jac[1][1],Jac[0][1],Jac[1][0]);
-    // }
 
     // Forces on i from current vertex
-    fx = -pressure[i]*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -pressure[i]*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+    fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+    fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
     f[jright][0] += fx;
     f[jright][1] += fy;
 
     // Vector for virial calculation
     rvec[0] = vert[0] - x[jright][0];
     rvec[1] = vert[1] - x[jright][1];
-    rvec[2] = 0.0;
-    // domain->minimum_image(rvec[0], rvec[1], rvec[2]);
 
     // Virial contributions
     total_virial[jright][0] -= fx*rvec[0];
     total_virial[jright][1] -= fy*rvec[1];
     total_virial[jright][3] -= fx*rvec[1];
-
-    // if (atom->tag[jright] == 190) {
-    //     printf("\n Force contribution: %f, %f from atom %d \n",fx,fy,atom->tag[i]);
-    // }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
     // ~~~~~~~~~~~~~~~~ Permute vertices cyclically ~~~~~~~~~~~~~~~~~~~~~//
@@ -626,7 +551,7 @@ void FixVolVoro::post_force(int vflag)
         // Only need to find the index of the n+2 face
         int jnext;
         if (n + 2 == num_faces) {
-            // printf("Using entry zero \n");
+
             jtmp = atom->map(dtf[i][0]);
             if (jtmp < 0) {
                 error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
@@ -636,7 +561,7 @@ void FixVolVoro::post_force(int vflag)
             jtmp = atom->map(dtf[i][num_faces-1]);
             DT[2] = domain->closest_image(i,jtmp);
         } else if (n + 1 == num_faces) {
-            // printf("Using entry one \n");
+
             jtmp = atom->map(dtf[i][1]);
             if (jtmp < 0) {
                 error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
@@ -646,7 +571,7 @@ void FixVolVoro::post_force(int vflag)
             jtmp = atom->map(dtf[i][0]);
             DT[2] = domain->closest_image(i,jtmp);
         } else {
-            // printf("Using entry n+2 (i.e., %d) \n",n+2);
+
             jtmp = atom->map(dtf[i][n+2]);
             if (jtmp < 0) {
                 error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
@@ -662,19 +587,9 @@ void FixVolVoro::post_force(int vflag)
         y2 = x[jnext][1];
         xn[0] = x0; xn[1] = x1; xn[2] = x2;
         yn[0] = y0; yn[1] = y1; yn[2] = y2;
-        // if (i == 0) {
-        //     printf("\n Calculating vertex from x coords %f, %f, %f and y coords %f, %f, %f \n",xn[0],xn[1],xn[2],yn[0],yn[1],yn[2]);
-        // }
         calc_cc(xn, yn, vert_next);
         x1 = x2;
         y1 = y2;
-
-        // if (i == 0) {
-        //     printf("\n Next face with tag %d, local id %d and mirror id %d with coords: %f, %f \n",atom->tag[j],jtmp,j,x2,y2);
-        // }
-        // if (i == 0) {
-        //     printf("\n Found vertex at %f, %f \n",vert_next[0],vert_next[1]);
-        // }
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
         // ~~~~~~~~~~~~~~~~ Force calculation on cell i ~~~~~~~~~~~~~~~~~~~~~//
@@ -687,25 +602,15 @@ void FixVolVoro::post_force(int vflag)
         // Calculate jacobian on atom i (cell owner)
         Jacobian(DT,i,Jac);
 
-        // if (i == 0) {
-        //     printf("\n Calculated i jacobian J11: %f, J22: %f, J12: %f, J21: %f \n",Jac[0][0],Jac[1][1],Jac[0][1],Jac[1][0]);
-        // }
-
         // Forces on i from current vertex
-        fx = -pressure[i]*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -pressure[i]*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+        fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+        fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
         f[i][0] += fx;
         f[i][1] += fy;
-
-        // if (atom->tag[i] == 190) {
-        //     printf("\n Force contribution: %f, %f \n",fx,fy);
-        // }
 
         // Vector for virial calculation
         rvec[0] = vert[0] - x[i][0];
         rvec[1] = vert[1] - x[i][1];
-        rvec[2] = 0.0;
-        // domain->minimum_image(rvec[0], rvec[1], rvec[2]);
 
         // Virial contributions
         total_virial[i][0] += fx*rvec[0];
@@ -721,25 +626,15 @@ void FixVolVoro::post_force(int vflag)
         // Calculate jacobian on atom jleft
         Jacobian(DT,jleft,Jac);
 
-        // if (i == 0) {
-        //     printf("\n Calculated jleft jacobian J11: %f, J22: %f, J12: %f, J21: %f \n",Jac[0][0],Jac[1][1],Jac[0][1],Jac[1][0]);
-        // }
-
         // Forces on i from current vertex
-        fx = -pressure[i]*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -pressure[i]*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+        fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+        fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
         f[jleft][0] += fx;
         f[jleft][1] += fy;
-
-        // if (atom->tag[jleft] == 190) {
-        //     printf("\n Force contribution: %f, %f from atom %d \n",fx,fy,atom->tag[i]);
-        // }
 
         // Vector for virial calculation
         rvec[0] = vert[0] - x[jleft][0];
         rvec[1] = vert[1] - x[jleft][1];
-        rvec[2] = 0.0;
-        // domain->minimum_image(rvec[0], rvec[1], rvec[2]);
 
         // Virial contributions
         total_virial[jleft][0] -= fx*rvec[0];
@@ -755,25 +650,15 @@ void FixVolVoro::post_force(int vflag)
         // Calculate jacobian on atom jleft
         Jacobian(DT,jright,Jac);
 
-        // if (i == 0) {
-        //     printf("\n Calculated jright jacobian J11: %f, J22: %f, J12: %f, J21: %f \n",Jac[0][0],Jac[1][1],Jac[0][1],Jac[1][0]);
-        // }
-
         // Forces on i from current vertex
-        fx = -pressure[i]*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -pressure[i]*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+        fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+        fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
         f[jright][0] += fx;
         f[jright][1] += fy;
-
-        // if (atom->tag[jright] == 190) {
-        //     printf("\n Force contribution: %f, %f from atom %d \n",fx,fy,atom->tag[i]);
-        // }
 
         // Vector for virial calculation
         rvec[0] = vert[0] - x[jright][0];
         rvec[1] = vert[1] - x[jright][1];
-        rvec[2] = 0.0;
-        // domain->minimum_image(rvec[0], rvec[1], rvec[2]);
 
         // Virial contributions
         total_virial[jright][0] -= fx*rvec[0];
@@ -798,23 +683,11 @@ void FixVolVoro::post_force(int vflag)
     }
   }
 
-//   for (int i = 0; i < nlocal; i++) {
-//     if (atom->tag[i] == 190) {
-//         printf("\n Force on atom 190 before reverse comm: %f, %f \n",f[i][0],f[i][1]);
-//     }
-//   }
-
   // Reverse communication of force vectors
   comm->reverse_comm();
 
   // Reverse communication of virial contributions
   comm->reverse_comm(this,6);
-
-//   for (int i = 0; i < nlocal; i++) {
-//     if (atom->tag[i] == 190) {
-//         printf("\n Force on atom 190 after reverse comm: %f, %f \n",f[i][0],f[i][1]);
-//     }
-//   }
 
   // Tally virial contributions of owned atoms
   for (int i = 0; i < nlocal; i++) {
@@ -990,19 +863,7 @@ void FixVolVoro::Jacobian(int *DT, int p, double *Jac){
 
   double d3[3] = {(clam*dlam3_dri[0]-lam3*dclam_dri[0])/(clam*clam),
                   (clam*dlam3_dri[1]-lam3*dclam_dri[1])/(clam*clam),
-                  (clam*dlam3_dri[2]-lam3*dclam_dri[2])/(clam*clam)} ; 
-
-//   drmu_dri[0][0] = ri[0]*d1[0]+lam1/clam+rj[0]*d2[0]+rk[0]*d3[0];
-//   drmu_dri[0][1] = ri[0]*d1[1]+rj[0]*d2[1]+rk[0]*d3[1];
-//   drmu_dri[0][2] = ri[0]*d1[2]+rj[0]*d2[2]+rk[0]*d3[2];
-
-//   drmu_dri[1][0] = ri[1]*d1[0]+rj[1]*d2[0]+rk[1]*d3[0];
-//   drmu_dri[1][1] = ri[1]*d1[1]+lam1/clam+rj[1]*d2[1]+rk[1]*d3[1];
-//   drmu_dri[1][2] = ri[1]*d1[2]+rj[1]*d2[2]+rk[1]*d3[2];
-
-//   drmu_dri[2][0] = ri[2]*d1[0]+rj[2]*d2[0]+rk[2]*d3[0];
-//   drmu_dri[2][1] = ri[2]*d1[1]+rj[2]*d2[1]+rk[2]*d3[1];
-//   drmu_dri[2][2] = ri[2]*d1[2]+lam1/clam+rj[2]*d2[2]+rk[2]*d3[2];
+                  (clam*dlam3_dri[2]-lam3*dclam_dri[2])/(clam*clam)} ;
 
   Jac[0] = ri[0]*d1[0]+lam1/clam+rj[0]*d2[0]+rk[0]*d3[0];
   Jac[2] = ri[0]*d1[1]+rj[0]*d2[1]+rk[0]*d3[1];
@@ -1023,32 +884,12 @@ int FixVolVoro::pack_forward_comm(int n, int *list, double *buf,
 
   m = 0;
 
-  if (commflag == 0) {
-    for(i = 0; i < n; i++){
-      j = list[i];
-      buf[m++] = pressure[j];
+  tagint **dtf = atom->iarray[index];
+  for (i = 0; i < n; i++) {
+    j = list[i];
+    for (int k = 0; k < max_faces; k++) {
+        buf[m++] = ubuf(dtf[j][k]).d;
     }
-    return m;
-  }
-
-// ~~~~~~~~ deprecated ~~~~~~~
-//   if (commflag == 1) { 
-//     for(i = 0; i < n; i++){
-//       j = list[i];
-//       buf[m++] = voro_volume0[j];
-//     }
-//     return m;
-//   } 
- 
-  if (commflag == 2) {
-      tagint **dtf = atom->iarray[index];
-      for (i = 0; i < n; i++) {
-        j = list[i];
-        for (int k = 0; k < max_faces; k++) {
-          buf[m++] = ubuf(dtf[j][k]).d;
-        }
-      }
-      return m;
   }
 
   return m;
@@ -1062,20 +903,10 @@ void FixVolVoro::unpack_forward_comm(int n, int first, double *buf)
   m = 0;
   last = first + n;
 
-  if (commflag == 0) {
-    for (i = first; i < last; i++){
-      pressure[i] = buf[m++];
-    }
-//   } else if (commflag == 1) {
-//     for (i = first; i < last; i++){
-//       voro_volume0[i] = buf[m++];
-//     }
-  } else if (commflag == 2) {
-    tagint **dtf = atom->iarray[index];
-    for (i = first; i < last; i++) {
-        for (int j = 0; j < max_faces; j++) {
-          dtf[i][j] = (tagint) ubuf(buf[m++]).i;
-        }
+  tagint **dtf = atom->iarray[index];
+  for (i = first; i < last; i++) {
+      for (int j = 0; j < max_faces; j++) {
+        dtf[i][j] = (tagint) ubuf(buf[m++]).i;
     }
   }
 
@@ -1121,6 +952,6 @@ void FixVolVoro::unpack_reverse_comm(int n, int *list, double *buf)
 double FixVolVoro::memory_usage()
 {
   int nmax = atom->nmax;
-  double bytes = (double)nmax*8 * sizeof(double);
+  double bytes = (double)nmax*6 * sizeof(double);
   return bytes;
 }

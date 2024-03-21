@@ -65,14 +65,8 @@ class FixVolVoro : public Fix {
 
   int ilevel_respa;
 
-  // Pressure due to area change on each atom (needs to be communicated)
-  double *pressure;
-
   // Total virial on each cell
   double **total_virial;
-
-  // For communicating voro_volume or voro_volume0 or dtf
-  int commflag;
 
   // Index of fix property/atom for storing DT faces
   char *new_fix_id;

@@ -13,60 +13,82 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(volcomp,FixVolComp);
+FixStyle(volvoro,FixVolVoro);
 // clang-format on
 #else
 
 //PRB{These Statements ensire that this class is only inlcuded once in the project}
-#ifndef LMP_FIX_VOLCOMP_H
-#define LMP_FIX_VOLCOMP_H
+#ifndef LMP_FIX_VOLVORO_H
+#define LMP_FIX_VOLVORO_H
 
 #include "fix.h"
 
 namespace LAMMPS_NS {
 
-class FixVolComp : public Fix {
+class FixVolVoro : public Fix {
  public:
-  FixVolComp(class LAMMPS *, int, char **);
-  ~FixVolComp() override;
+  FixVolVoro(class LAMMPS *, int, char **);
+  ~FixVolVoro() override;
   int setmask() override;
+  void post_constructor();
   void init() override;
   void setup(int) override;
   void min_setup(int) override;
   void post_force(int) override;
   void post_force_respa(int, int, int) override;
+  void post_integrate() override;
+  void post_integrate_respa(int, int) override;
   void min_post_force(int) override;
 
-  int pack_forward_comm(int, int *, double *, int, int *);
-  void unpack_forward_comm(int, int, double *);
-  double memory_usage();
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
+  int pack_reverse_comm(int, int, double *) override;
+  void unpack_reverse_comm(int, int *, double *) override;
+  double memory_usage() override;
   
   FILE *fp;
 
  protected:
- int me, nprocs; 
- int nmax;
-
- void calc_cc(double *, double *, double *);
+   int me, nprocs; 
+   int nmax;
 
  private:
   
   class Compute *vcompute; // ptr to compute voronoi
   class Fix *fstore;       // ptr to fix/store
 
-  double Elasticity, Apref;
+  double Elasticity, VolPref;
   int flag_store_init;
+  int max_faces;
  
   char *id_compute_voronoi, *id_fix_store;
 
   int ilevel_respa;
 
- // To read peratom area from compute voronoi
-  double *voro_data;
-  double *voro_area0;
+  // Pressure due to area change on each atom (needs to be communicated)
+  double *pressure;
 
-  // For communicating voro_area or voro_area0
+  // Total virial on each cell
+  double **total_virial;
+
+  // For communicating voro_volume or voro_volume0 or dtf
   int commflag;
+
+  // Index of fix property/atom for storing DT faces
+  char *new_fix_id;
+  int index;
+
+  // For keeping track of invoking DT creation
+  int countflag;
+
+  // For cyclically arranging a set of points
+  void arrange_cyclic(tagint *, int);
+
+  // For finding the circumcenter of a triangle
+  void calc_cc(double *, double *, double *);
+
+  // For calculating the jacobian
+  void Jacobian(int *, int, double *);
 
 };
 

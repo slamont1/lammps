@@ -13,22 +13,22 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(volcomp,FixVolComp);
+FixStyle(volbulk,FixVolBulk);
 // clang-format on
 #else
 
 //PRB{These Statements ensire that this class is only inlcuded once in the project}
-#ifndef LMP_FIX_VOLCOMP_H
-#define LMP_FIX_VOLCOMP_H
+#ifndef LMP_FIX_VOLBULK_H
+#define LMP_FIX_VOLBULK_H
 
 #include "fix.h"
 
 namespace LAMMPS_NS {
 
-class FixVolComp : public Fix {
+class FixVolBulk : public Fix {
  public:
-  FixVolComp(class LAMMPS *, int, char **);
-  ~FixVolComp() override;
+  FixVolBulk(class LAMMPS *, int, char **);
+  ~FixVolBulk() override;
   int setmask() override;
   void init() override;
   void setup(int) override;
@@ -37,9 +37,11 @@ class FixVolComp : public Fix {
   void post_force_respa(int, int, int) override;
   void min_post_force(int) override;
 
-  int pack_forward_comm(int, int *, double *, int, int *);
-  void unpack_forward_comm(int, int, double *);
-  double memory_usage();
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
+  int pack_reverse_comm(int, int, double *) override;
+  void unpack_reverse_comm(int, int *, double *) override;
+  double memory_usage() override;
   
   FILE *fp;
 
@@ -47,25 +49,26 @@ class FixVolComp : public Fix {
  int me, nprocs; 
  int nmax;
 
- void calc_cc(double *, double *, double *);
-
  private:
   
   class Compute *vcompute; // ptr to compute voronoi
   class Fix *fstore;       // ptr to fix/store
 
-  double Elasticity, Apref;
+  double Elasticity, VolPref;
   int flag_store_init;
  
   char *id_compute_voronoi, *id_fix_store;
 
   int ilevel_respa;
 
- // To read peratom area from compute voronoi
-  double *voro_data;
-  double *voro_area0;
+  // To read peratom volume from compute voronoi
+  double *voro_volume;
+  double *voro_volume0;
 
-  // For communicating voro_area or voro_area0
+  // Total virial on each cell
+  double **total_virial;
+
+  // For communicating voro_volume or voro_volume0
   int commflag;
 
 };

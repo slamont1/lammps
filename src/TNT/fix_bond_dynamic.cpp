@@ -902,7 +902,7 @@ void FixBondDynamic::post_integrate()
   comm->forward_comm(this);
 
   // update special neigh lists of all atoms affected by any created bond
-  for (i = 0; i < nlocal; i++) {
+  for (i = 0; i < nlocal; i++) { 
     if (influenced[i]) rebuild_special_one(i);
   }
 

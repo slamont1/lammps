@@ -27,72 +27,79 @@ namespace LAMMPS_NS {
 class FixBondDynamic : public Fix {
  public:
   FixBondDynamic(class LAMMPS *, int, char **);
-  virtual ~FixBondDynamic();
-  int setmask();
-  void post_constructor();
-  void init();
+  ~FixBondDynamic() override;
+  int setmask() override;
+  void post_constructor() override;
+  void init() override;
   void init_list(int, class NeighList *) override;
   void setup(int) override;
-  void post_integrate();
-  void post_integrate_respa(int, int);
-
-  int pack_forward_comm(int, int *, double *, int, int *);
-  void unpack_forward_comm(int, int, double *);
-  double memory_usage();
+  void post_integrate() override;
+  void post_integrate_respa(int, int) override;
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
+  double memory_usage() override;
 
  protected:
   int me, nprocs;
-  int iatomtype,jatomtype;
-  int atype, btype, seed;
-  int imaxbond, jmaxbond, maxbond;
-  double cutsq, prob_attach, prob_detach, f0, ka, kd, DT_EQ;
-  double ka0, kd0, b0, b2, r_critical, r2_critical;
-  int flag_bell, flag_prob, flag_rouse, flag_critical, flag_mol, flag_skip;
-  int skip;
 
-  int overflow;
+  // Default arguments
+  int nevery,iatomtype,jatomtype,btype;
+  double ka,kd,cutsq;
 
-  int size_bonds_and_neighbors;
-  int size_bond_lists;
+  // Seed for random numbers
+  int seed;
 
-  int *bondcount;
-  int createcount, createcounttotal;
-  int breakcount, breakcounttotal;
-  int nmax;
-  tagint *partner, *finalpartner;
-  double *distsq, probability, *probabilities;
-  double cutoff;
-  int **broken_partners;
-  double **partners_probs, **partners_probs_f;
-  int *npos, *influenced;
-  int **partners_success;
+  // Max bond count for size of fbd
+  int maxbond;
 
-  tagint **partners_possible, **partners_possible_f;
+  // Flags for keywords
+  int flag_bell, flag_prob, flag_rouse, flag_critical, flag_mol;
 
-  int nbreak, maxbreak;
-  int ncreate, maxcreate;
-  tagint **created;
-  tagint **broken;
+  // Explicit probabilities for flag_prob
+  double prob_attach, prob_detach;
 
-  tagint *copy;
+  // Force sensitivity for flag_bell
+  double f0;
 
+  // Lengthscale for flag_rouse
+  double b2;
+
+  // Critical length for flag_critical
+  double r2_critical;
+
+  // Pointers for random numbers and neighbor list
   class RanMars *random;
   class NeighList *list;
 
-  int prop_atom_flag, nvalues, overlay_flag;
+  // Flag for initializing fbd
+  int countflag;
 
-  int countflag, commflag;
+  // Maximum number of atoms
+  int nmax;
+
+  // Pointers for attachment/detachment algorithms
+  tagint *partner, *finalpartner;
+  double *distsq, *probabilities;
+  double **partners_probs, **partners_probs_f;
+  tagint **partners_possible, **partners_possible_f;
+  int *npos;
+  int **partners_success;
+
+  // Character array for id of fix property/atom
+  char *new_fix_id;
+
+  // Index of fix property/atom
+  int index;
+
+  // Flag for forward communication
+  int commflag;
+
+  // For respa integration
   int nlevels_respa;
-  int nangles, ndihedrals, nimpropers;
 
+  // Internal methods/functions
   void process_broken(int, int);
   void process_created(int, int);
-  void rebuild_special_one(int);
-
-  int dedup(int, int, tagint *);
-
-  char *new_fix_id;
-  int index;
 
 };
 

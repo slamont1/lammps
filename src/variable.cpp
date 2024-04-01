@@ -1281,7 +1281,12 @@ void Variable::remove(int n)
     reader[i-1] = reader[i];
     data[i-1] = data[i];
     dvalue[i-1] = dvalue[i];
+
+    // copy VecVar struct from vecs[i] to vecs[i-1]
+
+    memcpy(&vecs[i-1],&vecs[i],sizeof(VecVar));
   }
+
   nvar--;
   data[nvar] = nullptr;
   reader[nvar] = nullptr;
@@ -1652,17 +1657,19 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
 
             if (!compute->array_flag)
               print_var_error(FLERR,"Mismatched compute in variable formula",ivar);
-            if (compute->size_array_rows == 0)
-              print_var_error(FLERR,"Variable formula compute array is zero length",ivar);
-            if (index1 > compute->size_array_cols)
-              print_var_error(FLERR,"Variable formula compute array is accessed out-of-range",ivar,0);
             if (!compute->is_initialized())
               print_var_error(FLERR,"Variable formula compute cannot be invoked before "
                               "initialization by a run",ivar);
+            if (index1 > compute->size_array_cols)
+              print_var_error(FLERR,"Variable formula compute array is accessed out-of-range",ivar,0);
             if (!(compute->invoked_flag & Compute::INVOKED_ARRAY)) {
               compute->compute_array();
               compute->invoked_flag |= Compute::INVOKED_ARRAY;
             }
+            // wait until after compute invocation to check size_array_rows
+            // b/c may be zero until after initial invocation
+            if (compute->size_array_rows == 0)
+              print_var_error(FLERR,"Variable formula compute array is zero length",ivar);
 
             auto newtree = new Tree();
             newtree->type = VECTORARRAY;
@@ -1972,12 +1979,12 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
 
       } else if (strncmp(word,"v_",2) == 0) {
 
-        int ivar = find(word+2);
-        if (ivar < 0)
+        int jvar = find(word+2);
+        if (jvar < 0)
           print_var_error(FLERR,fmt::format("Invalid variable reference {} in variable formula",word),
-                          ivar);
-        if (eval_in_progress[ivar])
-          print_var_error(FLERR,"has a circular dependency",ivar);
+                          jvar);
+        if (eval_in_progress[jvar])
+          print_var_error(FLERR,"has a circular dependency",jvar);
 
         // parse zero or one trailing brackets
         // point i beyond last bracket
@@ -2001,9 +2008,9 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
           // scalar from internal-style variable
           // access value directly
 
-          if (style[ivar] == INTERNAL) {
+          if (style[jvar] == INTERNAL) {
 
-            value1 = dvalue[ivar];
+            value1 = dvalue[jvar];
             if (tree) {
               auto newtree = new Tree();
               newtree->type = VALUE;
@@ -2014,13 +2021,13 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
             // scalar from any style variable except VECTOR, ATOM, ATOMFILE
             // access value via retrieve()
 
-          } else if (style[ivar] != ATOM && style[ivar] != ATOMFILE && style[ivar] != VECTOR) {
+          } else if (style[jvar] != ATOM && style[jvar] != ATOMFILE && style[jvar] != VECTOR) {
 
             char *var = retrieve(word+2);
             if (var == nullptr)
-              print_var_error(FLERR,"Invalid variable evaluation in variable formula",ivar);
+              print_var_error(FLERR,"Invalid variable evaluation in variable formula",jvar);
             if (!utils::is_double(var))
-              print_var_error(FLERR,"Non-numeric variable value in variable formula",ivar);
+              print_var_error(FLERR,"Non-numeric variable value in variable formula",jvar);
             if (tree) {
               auto newtree = new Tree();
               newtree->type = VALUE;
@@ -2031,15 +2038,15 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
           // vector from vector-style variable
           // evaluate the vector-style variable, put result in newtree
 
-          } else if (style[ivar] == VECTOR) {
+          } else if (style[jvar] == VECTOR) {
 
             if (tree == nullptr)
-              print_var_error(FLERR,"Vector-style variable in equal-style variable formula",ivar);
+              print_var_error(FLERR,"Vector-style variable in equal-style variable formula",jvar);
             if (treetype == ATOM)
-              print_var_error(FLERR,"Vector-style variable in atom-style variable formula",ivar);
+              print_var_error(FLERR,"Vector-style variable in atom-style variable formula",jvar);
 
             double *vec;
-            int nvec = compute_vector(ivar,&vec);
+            int nvec = compute_vector(jvar,&vec);
 
             auto newtree = new Tree();
             newtree->type = VECTORARRAY;
@@ -2051,36 +2058,36 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
           // vector from atom-style variable
           // evaluate the atom-style variable as newtree
 
-          } else if (style[ivar] == ATOM) {
+          } else if (style[jvar] == ATOM) {
 
             if (tree == nullptr)
-              print_var_error(FLERR,"Atom-style variable in equal-style variable formula",ivar);
+              print_var_error(FLERR,"Atom-style variable in equal-style variable formula",jvar);
             if (treetype == VECTOR)
-              print_var_error(FLERR,"Atom-style variable in vector-style variable formula",ivar);
+              print_var_error(FLERR,"Atom-style variable in vector-style variable formula",jvar);
 
             Tree *newtree = nullptr;
-            evaluate(data[ivar][0],&newtree,ivar);
+            evaluate(data[jvar][0],&newtree,jvar);
             treestack[ntreestack++] = newtree;
 
           // vector from atomfile-style variable
           // point to the values in FixStore instance
 
-          } else if (style[ivar] == ATOMFILE) {
+          } else if (style[jvar] == ATOMFILE) {
 
             if (tree == nullptr)
-              print_var_error(FLERR,"Atomfile-style variable in equal-style variable formula",ivar);
+              print_var_error(FLERR,"Atomfile-style variable in equal-style variable formula",jvar);
             if (treetype == VECTOR)
-              print_var_error(FLERR,"Atomfile-style variable in vector-style variable formula",ivar);
+              print_var_error(FLERR,"Atomfile-style variable in vector-style variable formula",jvar);
 
             auto newtree = new Tree();
             newtree->type = ATOMARRAY;
-            newtree->array = reader[ivar]->fixstore->vstore;
+            newtree->array = reader[jvar]->fixstore->vstore;
             newtree->nstride = 1;
             treestack[ntreestack++] = newtree;
 
           // no other possibilities for variable with no bracket
 
-          } else print_var_error(FLERR,"Mismatched variable in variable formula",ivar);
+          } else print_var_error(FLERR,"Mismatched variable in variable formula",jvar);
 
         // vname[i] with one bracket
 
@@ -2089,12 +2096,12 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
           // scalar from vector-style variable
           // compute the vector-style variable, extract single value
 
-          if (style[ivar] == VECTOR) {
+          if (style[jvar] == VECTOR) {
 
             double *vec;
-            int nvec = compute_vector(ivar,&vec);
+            int nvec = compute_vector(jvar,&vec);
             if (index <= 0 || index > nvec)
-              print_var_error(FLERR,"Invalid index into vector-style variable",ivar);
+              print_var_error(FLERR,"Invalid index into vector-style variable",jvar);
             int m = index;   // convert from tagint to int
 
             if (tree) {
@@ -2108,25 +2115,25 @@ double Variable::evaluate(char *str, Tree **tree, int ivar)
           // compute the per-atom variable in result
           // use peratom2global to extract single value from result
 
-          } else if (style[ivar] == ATOM) {
+          } else if (style[jvar] == ATOM) {
 
             double *result;
             memory->create(result,atom->nlocal,"variable:result");
-            compute_atom(ivar,0,result,1,0);
+            compute_atom(jvar,0,result,1,0);
             peratom2global(1,nullptr,result,1,index,tree,treestack,ntreestack,argstack,nargstack);
             memory->destroy(result);
 
           // scalar from atomfile-style variable
           // use peratom2global to extract single value from FixStore instance
 
-          } else if (style[ivar] == ATOMFILE) {
+          } else if (style[jvar] == ATOMFILE) {
 
-            peratom2global(1,nullptr,reader[ivar]->fixstore->vstore,1,index,
+            peratom2global(1,nullptr,reader[jvar]->fixstore->vstore,1,index,
                            tree,treestack,ntreestack,argstack,nargstack);
 
           // no other possibilities for variable with one bracket
 
-          } else print_var_error(FLERR,"Mismatched variable in variable formula",ivar);
+          } else print_var_error(FLERR,"Mismatched variable in variable formula",jvar);
         }
 
       // ----------------

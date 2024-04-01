@@ -555,8 +555,13 @@ void FixBondDynamic::post_integrate()
       if (npos[j] == 0) continue;
       if (tag[i] == tag[j]) continue;
 
-      if (flag_mol) {
+      // flag_mol = 1 means only atoms on different molecules can bond
+      if (flag_mol == 1) {
         if (molecule[i] == molecule[j]) continue;
+      }
+      // flag_mol = 2 means only atoms on the same molecule can bond
+      if (flag_mol == 2) {
+        if (molecule[i] != molecule[j]) continue;
       }
 
       // do not allow a duplicate bond to be created

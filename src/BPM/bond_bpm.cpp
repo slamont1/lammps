@@ -187,11 +187,11 @@ void BondBPM::settings(int narg, char **arg)
         iarg++;
       }
     } else if (strcmp(arg[iarg], "overlay/pair") == 0) {
-      if (iarg + 2 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for overlay/pair");
+      if (iarg + 1 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for overlay/pair");
       overlay_flag = utils::logical(FLERR, arg[iarg + 1], false, lmp);
       iarg += 2;
     } else if (strcmp(arg[iarg], "break") == 0) {
-      if (iarg + 2 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for break");
+      if (iarg + 1 > narg) error->all(FLERR, "Illegal bond bpm command, missing option for break");
       break_flag = utils::logical(FLERR, arg[iarg + 1], false, lmp);
       iarg += 2;
     } else {
@@ -357,7 +357,6 @@ void BondBPM::process_broken(int i, int j)
   if (i < nlocal) {
     for (m = 0; m < num_bond[i]; m++) {
       if (bond_atom[i][m] == tag[j]) {
-        bond_type[i][m] = 0;
         n = num_bond[i];
         bond_type[i][m] = bond_type[i][n - 1];
         bond_atom[i][m] = bond_atom[i][n - 1];
@@ -372,7 +371,6 @@ void BondBPM::process_broken(int i, int j)
   if (j < nlocal) {
     for (m = 0; m < num_bond[j]; m++) {
       if (bond_atom[j][m] == tag[i]) {
-        bond_type[j][m] = 0;
         n = num_bond[j];
         bond_type[j][m] = bond_type[j][n - 1];
         bond_atom[j][m] = bond_atom[j][n - 1];

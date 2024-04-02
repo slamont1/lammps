@@ -44,6 +44,10 @@ class FixVolVoro : public Fix {
   void unpack_forward_comm(int, int, double *) override;
   int pack_reverse_comm(int, int, double *) override;
   void unpack_reverse_comm(int, int *, double *) override;
+  int pack_exchange(int, double *) override;
+  int unpack_exchange(int, double *) override;
+  void grow_arrays(int) override;
+  void set_arrays(int) override;
   double memory_usage() override;
   
   FILE *fp;

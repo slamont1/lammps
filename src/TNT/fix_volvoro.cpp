@@ -103,11 +103,27 @@ FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
     } else error->all(FLERR,"Illegal fix voronoi command");
   }
 
+  // Default nevery for now
   nevery = 1;
 
+  // Countflag to only initialize once
   countflag = 0;
+
+  // Initialize nmax and virial pointer
   nmax = atom->nmax;
   total_virial = nullptr;
+
+  // Specify attributes for dumping connectivity (dtf)
+  peratom_flag = 1;
+  size_peratom_cols = max_faces;
+  peratom_freq = 1;
+
+  // perform initial allocation of atom-based arrays
+  // register with Atom class
+  if (peratom_flag) {
+    FixVolVoro::grow_arrays(atom->nmax);
+    atom->add_callback(Atom::GROW);
+  }
 
 }
 
@@ -119,6 +135,11 @@ FixVolVoro::~FixVolVoro()
   delete[] id_fix_store;
   
   memory->destroy(total_virial);
+
+  // unregister callbacks to this fix from atom class
+  if (peratom_flag) {
+    atom->delete_callback(id,Atom::GROW);
+  }
 
   if (new_fix_id && modify->nfix) modify->delete_fix(new_fix_id);
   delete [] new_fix_id;
@@ -321,19 +342,22 @@ void FixVolVoro::post_integrate()
             ind3 = 0;
         }
 
-        // Local id of ind1
-        int j_ind1_tmp = atom->map(dtf[i][ind1]);
-        if (j_ind1_tmp < 0) {
-            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
-        }
-        int j_ind1 = domain->closest_image(i,j_ind1_tmp);
-
         // local id of ind2
         int j_ind2_tmp = atom->map(dtf[i][ind2]);
         if (j_ind2_tmp < 0) {
             error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
         }
         int j_ind2 = domain->closest_image(i,j_ind2_tmp);
+
+        // if j_ind2 is ghost, only proceed if my tag is larger
+        // if (j_ind2 > nlocal && atom->tag[j_ind2] > atom->tag[i]) continue;
+
+        // Local id of ind1
+        int j_ind1_tmp = atom->map(dtf[i][ind1]);
+        if (j_ind1_tmp < 0) {
+            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
+        }
+        int j_ind1 = domain->closest_image(i,j_ind1_tmp);
 
         // local id of ind3
         int j_ind3_tmp = atom->map(dtf[i][ind3]);
@@ -443,9 +467,23 @@ void FixVolVoro::post_integrate()
 
     }
 
+    // Full triangulation is rebuilt if any proc has flip = 1
+    int flip_all;
+    MPI_Allreduce(&flip, &flip_all, 1, MPI_INT, MPI_MAX, world);
+
     // Restart from atom 0 if flip occured
-    if (flip == 1) {
+    if (flip_all == 1) {
         i = 0;
+
+        // Communicate for inter-processor consistency
+        // comm->forward_comm(this,max_faces);
+
+        // Loop through ghosts to update flips that occurred on another proc
+        // for (int j = nlocal; j < nall; j++) {
+        //   for (int m = 0; m < max_faces; m ++) {
+        //     tagint tagi = dtf[j][m];
+        //   }
+        // }
     } else {
         i++;
     }
@@ -497,6 +535,15 @@ void FixVolVoro::post_force(int vflag)
   for (int i = 0; i < nall; i++) {
     for (int j = 0; j < 5; j++) {
         total_virial[i][j] = 0.0;
+    }
+  }
+
+  // Reset array-atom if outputting
+  if (peratom_flag) {
+    for (int i = 0; i < nlocal; i++) {
+      for (int n = 0; n < max_faces; n++) {
+        array_atom[i][n] = 0.0;
+      }
     }
   }
 
@@ -892,6 +939,15 @@ void FixVolVoro::post_force(int vflag)
     }
   }
  
+  // Store dtf for outputting
+  if (peratom_flag) {
+    for (int i = 0; i < nlocal; i++) {
+      for (int n = 0; n < max_faces; n++) {
+        array_atom[i][n] = dtf[i][n];
+      }
+    }
+  }
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1200,6 +1256,57 @@ void FixVolVoro::unpack_reverse_comm(int n, int *list, double *buf)
 }
 
 /* ----------------------------------------------------------------------
+   pack values in local atom-based arrays for exchange with another proc
+------------------------------------------------------------------------- */
+
+int FixVolVoro::pack_exchange(int i, double *buf)
+{
+  int n = 0;
+  if (peratom_flag) {
+    for (int m = 0; m < size_peratom_cols; m++)
+      buf[n++] = array_atom[i][m];
+  }
+  return n;
+}
+
+/* ----------------------------------------------------------------------
+   unpack values into local atom-based arrays after exchange
+------------------------------------------------------------------------- */
+
+int FixVolVoro::unpack_exchange(int nlocal, double *buf)
+{
+  int n = 0;
+  if (peratom_flag) {
+    for (int m = 0; m < size_peratom_cols; m++)
+      array_atom[nlocal][m] = buf[n++];
+  }
+  return n;
+}
+
+/* ----------------------------------------------------------------------
+   allocate local atom-based arrays
+------------------------------------------------------------------------- */
+
+void FixVolVoro::grow_arrays(int nmax)
+{
+  if (peratom_flag) {
+    memory->grow(array_atom,nmax,size_peratom_cols,"fix_wall_gran:array_atom");
+  }
+}
+
+/* ----------------------------------------------------------------------
+   initialize one atom's array values, called when atom is created
+------------------------------------------------------------------------- */
+
+void FixVolVoro::set_arrays(int i)
+{
+  if (peratom_flag) {
+    for (int m = 0; m < size_peratom_cols; m++)
+      array_atom[i][m] = 0;
+  }
+}
+
+/* ----------------------------------------------------------------------
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
 
@@ -1207,5 +1314,6 @@ double FixVolVoro::memory_usage()
 {
   int nmax = atom->nmax;
   double bytes = (double)nmax*6 * sizeof(double);
+  if (peratom_flag) bytes += (double)nmax * size_peratom_cols * sizeof(double);
   return bytes;
 }

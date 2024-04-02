@@ -278,6 +278,10 @@ void FixVolVoro::post_integrate()
 
   tagint **dtf = atom->iarray[index];
 
+  // acquire updated ghost atom positions
+  // necessary b/c are calling this after integrate, but before Verlet comm
+  comm->forward_comm();
+
   // Communicate dtf for ghost info
   comm->forward_comm(this,max_faces);
 

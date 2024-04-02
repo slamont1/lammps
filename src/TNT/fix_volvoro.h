@@ -82,7 +82,10 @@ class FixVolVoro : public Fix {
   void calc_cc(double *, double *, double *);
 
   // For calculating the jacobian
-  void Jacobian(int *, int, double *);
+  void calc_jacobian(int *, int, double *);
+
+  // For calculating cell volumes
+  double calc_area(int *, int, int);
 
 };
 

@@ -342,6 +342,13 @@ void FixVolVoro::post_integrate()
             ind3 = 0;
         }
 
+        // Local id of ind1
+        int j_ind1_tmp = atom->map(dtf[i][ind1]);
+        if (j_ind1_tmp < 0) {
+            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
+        }
+        int j_ind1 = domain->closest_image(i,j_ind1_tmp);
+
         // local id of ind2
         int j_ind2_tmp = atom->map(dtf[i][ind2]);
         if (j_ind2_tmp < 0) {
@@ -351,13 +358,6 @@ void FixVolVoro::post_integrate()
 
         // if j_ind2 is ghost, only proceed if my tag is larger
         // if (j_ind2 > nlocal && atom->tag[j_ind2] > atom->tag[i]) continue;
-
-        // Local id of ind1
-        int j_ind1_tmp = atom->map(dtf[i][ind1]);
-        if (j_ind1_tmp < 0) {
-            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
-        }
-        int j_ind1 = domain->closest_image(i,j_ind1_tmp);
 
         // local id of ind3
         int j_ind3_tmp = atom->map(dtf[i][ind3]);
@@ -468,12 +468,15 @@ void FixVolVoro::post_integrate()
     }
 
     // Full triangulation is rebuilt if any proc has flip = 1
-    int flip_all;
-    MPI_Allreduce(&flip, &flip_all, 1, MPI_INT, MPI_MAX, world);
+    // int flip_all = 0;
+    // MPI_Allreduce(&flip, &flip_all, 1, MPI_INT, MPI_MAX, world);
 
     // Restart from atom 0 if flip occured
-    if (flip_all == 1) {
+    if (flip == 1) {
         i = 0;
+
+        // printf("proc: %d, flip: %d\n",me,flip);
+        // printf("flip_all: %d\n",flip_all);
 
         // Communicate for inter-processor consistency
         // comm->forward_comm(this,max_faces);

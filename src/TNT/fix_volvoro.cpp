@@ -154,8 +154,9 @@ int FixVolVoro::setmask()
   datamask_read = datamask_modify = 0;
 
   int mask = 0;
-  mask |= POST_INTEGRATE;
-  mask |= POST_INTEGRATE_RESPA;
+  // mask |= POST_INTEGRATE;
+  // mask |= POST_INTEGRATE_RESPA;
+  mask |= PRE_FORCE;
   mask |= POST_FORCE;
   mask |= POST_FORCE_RESPA;
   mask |= MIN_POST_FORCE;
@@ -260,7 +261,6 @@ void FixVolVoro::setup(int vflag)
   }
 
   // Communicate dtf
-//   commflag = 2;
   comm->forward_comm(this,max_faces);
     
   // Create memory allocations
@@ -286,18 +286,8 @@ void FixVolVoro::min_setup(int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void FixVolVoro::post_integrate()
+void FixVolVoro::pre_force(int vflag)
 {
-  double **x = atom->x;
-  int *mask = atom->mask;
-  tagint *tag = atom->tag;
-
-  int natoms = atom->natoms;
-  int nlocal = atom->nlocal;
-  int nghost = atom->nghost;
-  int nall = nlocal + nghost;
-
-  tagint **dtf = atom->iarray[index];
 
   // acquire updated ghost atom positions
   // necessary b/c are calling this after integrate, but before Verlet comm
@@ -306,204 +296,110 @@ void FixVolVoro::post_integrate()
   // Communicate dtf for ghost info
   comm->forward_comm(this,max_faces);
 
-  // Loop through all triangles and flip edges
-  int i = 0;
-  while (i < nlocal) {
+  // Local atom count for proc syncing
+  int nlocal = atom->nlocal;
 
-    // Determine the number of faces for this atom
-    int num_faces;
-    for (int n = 0; n < max_faces; n++) {
-        if (dtf[i][n] == 0) {
-            num_faces = n;
-            break;
-        }
-    }
+  // Full triangulation is rebuilt if any proc has flip = 1
+  // Initialize flag to 1 to begin the loop
+  int flip_all = 1;
 
-    // Flip flag
-    int flip = 0;
+  while (flip_all > 0) {
 
-    // Loop through each face to count all triangles
-    for (int n = 0; n < num_faces; n++) {
+    // Empty pointer to edge tags
+    tagint edge_tags[4] = {0,0,0,0};
 
-        // Indices of current and next neighbor
-        int ind1 = n;
-        int ind2 = n+1;
-
-        // Loop back to first neighbor for final triangle
-        if (ind2 == num_faces) {
-            ind2 = 0;
-        }
-
-        // Index of third neighbor
-        int ind3 = ind2+1;
-
-        // Loop back to first neighbor for second to last triangle
-        if (ind3 == num_faces) {
-            ind3 = 0;
-        }
-
-        // Local id of ind1
-        int j_ind1_tmp = atom->map(dtf[i][ind1]);
-        if (j_ind1_tmp < 0) {
-            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
-        }
-        int j_ind1 = domain->closest_image(i,j_ind1_tmp);
-
-        // local id of ind2
-        int j_ind2_tmp = atom->map(dtf[i][ind2]);
-        if (j_ind2_tmp < 0) {
-            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
-        }
-        int j_ind2 = domain->closest_image(i,j_ind2_tmp);
-
-        // if j_ind2 is ghost, only proceed if my tag is larger
-        // if (j_ind2 > nlocal && atom->tag[j_ind2] > atom->tag[i]) continue;
-
-        // local id of ind3
-        int j_ind3_tmp = atom->map(dtf[i][ind3]);
-        if (j_ind3_tmp < 0) {
-            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
-        }
-        int j_ind3 = domain->closest_image(i,j_ind3_tmp);
-
-        // a: distance btw. i and j_ind2
-        double a2 = (x[i][0] - x[j_ind2][0])*(x[i][0] - x[j_ind2][0]) + (x[i][1] - x[j_ind2][1])*(x[i][1] - x[j_ind2][1]);
-
-        // b: distance btw. i and j_ind1
-        double b2 = (x[i][0] - x[j_ind1][0])*(x[i][0] - x[j_ind1][0]) + (x[i][1] - x[j_ind1][1])*(x[i][1] - x[j_ind1][1]);
-
-        // c: distance btw. j_ind1 and j_ind2
-        double c2 = (x[j_ind2][0] - x[j_ind1][0])*(x[j_ind2][0] - x[j_ind1][0]) + (x[j_ind2][1] - x[j_ind1][1])*(x[j_ind2][1] - x[j_ind1][1]);
-
-        // d: distance btw. i and j_ind3
-        double d2 = (x[i][0] - x[j_ind3][0])*(x[i][0] - x[j_ind3][0]) + (x[i][1] - x[j_ind3][1])*(x[i][1] - x[j_ind3][1]);
-
-        // e: distance btw. j_ind2 and j_ind3
-        double e2 = (x[j_ind2][0] - x[j_ind3][0])*(x[j_ind2][0] - x[j_ind3][0]) + (x[j_ind2][1] - x[j_ind3][1])*(x[j_ind2][1] - x[j_ind3][1]);
-
-        // External angles
-        double costh1 = (b2 + c2 - a2)/(pow(b2,0.5)*pow(c2,0.5));
-        double costh2 = (d2 + e2 - a2)/(pow(d2,0.5)*pow(e2,0.5));
-
-        // Flip if costh1 + costh2 < 0
-        if (costh1 + costh2 < 0.0) {
-
-            // First remove entry ind2 from atom i
-            for (int m = 0; m < max_faces; m++){
-                if (dtf[i][m] == atom->tag[j_ind2]) {
-                    dtf[i][m] = 0;
-                    break;
-                }
-            }
-
-            // Move zero entries to the end of dtf[i]
-            int right = 0; // Points to the next position for a non-zero element
-            for (int left = 0; left < max_faces; ++left) {
-                if (dtf[i][left] != 0) {
-                    // Swap only if left and right are different
-                    if (left != right) {
-                        std::swap(dtf[i][left], dtf[i][right]);
-                    }
-                    right++;
-                }
-            }
-
-            // Next remove entry tag[i] from atom ind2
-            for (int m = 0; m < max_faces; m++){
-                if (dtf[j_ind2][m] == atom->tag[i]) {
-                    dtf[j_ind2][m] = 0;
-                    break;
-                }
-            }
-
-            // Move zero entries to the end of dtf[j_ind2]
-            right = 0; // Points to the next position for a non-zero element
-            for (int left = 0; left < max_faces; ++left) {
-                if (dtf[j_ind2][left] != 0) {
-                    // Swap only if left and right are different
-                    if (left != right) {
-                        std::swap(dtf[j_ind2][left], dtf[j_ind2][right]);
-                    }
-                    right++;
-                }
-            }
-
-            // Next add entry ind3 to atom ind1
-            int index1 = max_faces+1;
-            for (int m = 0; m < max_faces; m++){
-                if (dtf[j_ind1][m] == 0) {
-                    index1 = m;
-                    break;
-                }
-            }
-            if (index1 == max_faces+1) {
-                error->one(FLERR,"Max faces exceeded");
-            }
-            dtf[j_ind1][index1] = atom->tag[j_ind3];
-
-            // Next add entry ind1 to atom ind3
-            int index3 = max_faces+1;
-            for (int m = 0; m < max_faces; m++){
-                if (dtf[j_ind3][m] == 0) {
-                    index3 = m;
-                    break;
-                }
-            }
-            if (index3 == max_faces+1) {
-                error->one(FLERR,"Max faces exceeded");
-            }
-            dtf[j_ind3][index3] = atom->tag[j_ind1];
-
-            // Correct cyclic arrangement for each atom
-            arrange_cyclic(dtf[i],i);
-            arrange_cyclic(dtf[j_ind1],j_ind1);
-            arrange_cyclic(dtf[j_ind2],j_ind2);
-            arrange_cyclic(dtf[j_ind3],j_ind3);
-
-            // Flag the flip to reset loop
-            flip = 1;
-            break;
-        }
-
-    }
-
-    // Full triangulation is rebuilt if any proc has flip = 1
-    // int flip_all = 0;
-    // MPI_Allreduce(&flip, &flip_all, 1, MPI_INT, MPI_MAX, world);
-
-    // Restart from atom 0 if flip occured
+    // Check for edge flips on this proc
+    int flip = check_edges(edge_tags);
     if (flip == 1) {
-        i = 0;
+      printf("\n Proc %d: found edge flip %d,%d,%d,%d\n\n",me,edge_tags[0],edge_tags[1],edge_tags[2],edge_tags[3]);
+    }
+    if (flip == 1) flip += me;
 
-        // printf("proc: %d, flip: %d\n",me,flip);
-        // printf("flip_all: %d\n",flip_all);
+    // Check other procs to see if a flip has occurred
+    MPI_Allreduce(&flip, &flip_all, 1, MPI_INT, MPI_MAX, world);
 
-        // Communicate for inter-processor consistency
-        // comm->forward_comm(this,max_faces);
+    // If any flips, need to sync procs before next calculation
+    if (flip_all > 0) {
 
-        // Loop through ghosts to update flips that occurred on another proc
-        // for (int j = nlocal; j < nall; j++) {
-        //   for (int m = 0; m < max_faces; m ++) {
-        //     tagint tagi = dtf[j][m];
-        //   }
-        // }
-    } else {
-        i++;
+      // Flip edge from proc with the highest rank
+      int flip_rank = flip_all-1;
+
+      // All processors take edge_tags from flip_rank
+      MPI_Barrier(world);
+      MPI_Bcast(&edge_tags,4,MPI_INT,flip_rank,world);
+      MPI_Barrier(world);
+
+      printf("\n Proc %d: flipping edge %d,%d,%d,%d\n",me,edge_tags[0],edge_tags[1],edge_tags[2],edge_tags[3]);
+
+      // Perform edge flipping on owned procs
+      flip_edge(edge_tags);
+
+      printf("Proc %d: Success!\n\n",me);
+
+      // IDEA: BARRIER BEFORE COMM????
+
+      // // First update my edges if needed
+      // if (flip == 1) {
+      //   flip_edge(edge_tags);
+      // }
+
+      // // ranks of directly neighboring procs
+      // int left = comm->procneigh[0][0];
+      // int right = comm->procneigh[0][1];
+      // int top = comm->procneigh[1][0];
+      // int bottom = comm->procneigh[1][1];
+
+      // // Boolean value for determining if an edge needs to be flipped
+      // bool same_edge;
+
+      // // Send left receive right
+      // tagint recv_right[4];
+      // MPI_Sendrecv(edge_tags, 4, MPI_INT, left, 0, recv_right, 4, MPI_INT, right, 0, world, MPI_STATUS_IGNORE);
+      // same_edge = check_same_edge(edge_tags,recv_right);
+      // if (same_edge == false) flip_edge(recv_right);
+
+      // // Send right receive left
+      // tagint recv_left[4];
+      // MPI_Sendrecv(edge_tags, 4, MPI_INT, right, 1, recv_left, 4, MPI_INT, left, 1, world, MPI_STATUS_IGNORE);
+      // bool same_me_left = check_same_edge(edge_tags,recv_left);
+      // bool same_left_right = check_same_edge(recv_right,recv_left);
+      // same_edge = same_me_left || same_left_right;
+      // if (same_edge == false) flip_edge(recv_left);
+
+      // // Send top receive bottom
+      // tagint recv_bottom[4];
+      // MPI_Sendrecv(edge_tags, 4, MPI_INT, top, 2, recv_bottom, 4, MPI_INT, bottom, 2, world, MPI_STATUS_IGNORE);
+      // bool same_me_bottom = check_same_edge(edge_tags,recv_bottom);
+      // bool same_left_bottom = check_same_edge(recv_bottom,recv_left);
+      // bool same_right_bottom = check_same_edge(recv_bottom,recv_right);
+      // same_edge = same_me_bottom || same_left_bottom || same_right_bottom;
+      // if (same_edge == false) flip_edge(recv_bottom);
+
+      // // Send bottom seceive top
+      // tagint recv_top[4];
+      // MPI_Sendrecv(edge_tags, 4, MPI_INT, bottom, 3, recv_top, 4, MPI_INT, top, 3, world, MPI_STATUS_IGNORE);
+      // bool same_me_top = check_same_edge(edge_tags,recv_top);
+      // bool same_left_top = check_same_edge(recv_top,recv_left);
+      // bool same_right_top = check_same_edge(recv_top,recv_right);
+      // bool same_bottom_top = check_same_edge(recv_top,recv_bottom);
+      // same_edge = same_me_top || same_left_top || same_right_top || same_bottom_top;
+      // if (same_edge == false) flip_edge(recv_top);
+
+      // Communicate final dtf
+      comm->forward_comm(this,max_faces);
+
     }
 
   }
-
-  // Communicate final dtf
-  comm->forward_comm(this,max_faces);
 
 }
 
 /* ---------------------------------------------------------------------- */
 
-void FixVolVoro::post_integrate_respa(int ilevel, int /*iloop*/)
-{
-  if (ilevel == ilevel_respa-1) post_integrate();
-}
+// void FixVolVoro::post_integrate_respa(int ilevel, int /*iloop*/)
+// {
+//   if (ilevel == ilevel_respa-1) post_integrate();
+// }
 
 /* ---------------------------------------------------------------------- */
 
@@ -577,22 +473,22 @@ void FixVolVoro::post_force(int vflag)
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
     // Local ids of atoms in current triangulation
-    int DT[3] = {0};
+    int DT[3] = {0,0,0};
 
     // Coordinates of current, previous, and next vertex
-    double vert[2] = {0.0}, vert_prev[2] = {0.0}, vert_next[2] = {0.0};
+    double vert[2] = {0.0,0.0}, vert_prev[2] = {0.0,0.0}, vert_next[2] = {0.0,0.0};
 
     // x and y coordinates of current triangulation
-    double xn[3] = {0.0}, yn[3] = {0.0};
+    double xn[3] = {0.0,0.0,0.0}, yn[3] = {0.0,0.0,0.0};
 
     // Vector spanning between n+1 and n-1 vertices
-    double rnu_diff[2] = {0.0};
+    double rnu_diff[2] = {0.0,0.0};
 
     // Vector spanning between the vertex and the atom
-    double rvec[2] = {0.0};
+    double rvec[2] = {0.0,0.0};
 
     // Jacobian matrix (Voigt notation): J11, J22, J12, J21
-    double Jac[4] = {0.0};
+    double Jac[4] = {0.0,0.0,0.0,0.0};
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
     // ~~~~~~~~~~~~~~~~~~~~~~~ Begin calculations ~~~~~~~~~~~~~~~~~~~~~~~ //
@@ -608,6 +504,9 @@ void FixVolVoro::post_force(int vflag)
 
     // Volume and pressure due to volume change
     double voro_volume = calc_area(dtf[i],i,num_faces);
+    if (voro_volume < 0) {
+      error->one(FLERR,"Calculated negative volume");
+    }
     double voro_volume0;
     if (flag_store_init) {
         voro_volume0 = fstore->vector_atom[i];
@@ -969,6 +868,402 @@ void FixVolVoro::min_post_force(int vflag)
 
 /*------------------------------------------------------------------------*/
 
+int FixVolVoro::check_edges(tagint *edge_tags)
+{
+
+  double **x = atom->x;
+  int *mask = atom->mask;
+  tagint *tag = atom->tag;
+
+  int natoms = atom->natoms;
+  int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
+  int nall = nlocal + nghost;
+
+  tagint **dtf = atom->iarray[index];
+
+  // Loop through all triangles and flip edges
+  for (int i = 0; i < nlocal; i++) {
+
+    // Determine the number of faces for this atom
+    int num_faces;
+    for (int n = 0; n < max_faces; n++) {
+        if (dtf[i][n] == 0) {
+            num_faces = n;
+            break;
+        }
+    }
+
+    // Loop through each face to count all triangles
+    for (int n = 0; n < num_faces; n++) {
+
+        // Indices of current and next neighbor
+        int ind1 = n;
+        int ind2 = n+1;
+
+        // Loop back to first neighbor for final triangle
+        if (ind2 == num_faces) {
+            ind2 = 0;
+        }
+
+        // Index of third neighbor
+        int ind3 = ind2+1;
+
+        // Loop back to first neighbor for second to last triangle
+        if (ind3 == num_faces) {
+            ind3 = 0;
+        }
+
+        // Local id of ind1
+        int j_ind1_tmp = atom->map(dtf[i][ind1]);
+        if (j_ind1_tmp < 0) {
+            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
+        }
+        int j_ind1 = domain->closest_image(i,j_ind1_tmp);
+
+        // local id of ind2
+        int j_ind2_tmp = atom->map(dtf[i][ind2]);
+        if (j_ind2_tmp < 0) {
+            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
+        }
+        int j_ind2 = domain->closest_image(i,j_ind2_tmp);
+
+        // local id of ind3
+        int j_ind3_tmp = atom->map(dtf[i][ind3]);
+        if (j_ind3_tmp < 0) {
+            error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
+        }
+        int j_ind3 = domain->closest_image(i,j_ind3_tmp);
+
+        // a: distance btw. i and j_ind2
+        double a2 = (x[i][0] - x[j_ind2][0])*(x[i][0] - x[j_ind2][0]) + (x[i][1] - x[j_ind2][1])*(x[i][1] - x[j_ind2][1]);
+
+        // b: distance btw. i and j_ind1
+        double b2 = (x[i][0] - x[j_ind1][0])*(x[i][0] - x[j_ind1][0]) + (x[i][1] - x[j_ind1][1])*(x[i][1] - x[j_ind1][1]);
+
+        // c: distance btw. j_ind1 and j_ind2
+        double c2 = (x[j_ind2][0] - x[j_ind1][0])*(x[j_ind2][0] - x[j_ind1][0]) + (x[j_ind2][1] - x[j_ind1][1])*(x[j_ind2][1] - x[j_ind1][1]);
+
+        // d: distance btw. i and j_ind3
+        double d2 = (x[i][0] - x[j_ind3][0])*(x[i][0] - x[j_ind3][0]) + (x[i][1] - x[j_ind3][1])*(x[i][1] - x[j_ind3][1]);
+
+        // e: distance btw. j_ind2 and j_ind3
+        double e2 = (x[j_ind2][0] - x[j_ind3][0])*(x[j_ind2][0] - x[j_ind3][0]) + (x[j_ind2][1] - x[j_ind3][1])*(x[j_ind2][1] - x[j_ind3][1]);
+
+        // External angles
+        double costh1 = (b2 + c2 - a2)/(pow(b2,0.5)*pow(c2,0.5));
+        double costh2 = (d2 + e2 - a2)/(pow(d2,0.5)*pow(e2,0.5));
+
+        // Flip if costh1 + costh2 < 0
+        if (costh1 + costh2 < 0.0) {
+
+            // Store the tags for each atom in the flip to communicate
+            edge_tags[0] = atom->tag[i];
+            edge_tags[1] = atom->tag[j_ind1];
+            edge_tags[2] = atom->tag[j_ind2];
+            edge_tags[3] = atom->tag[j_ind3];
+
+            printf("\n Proc %d: flagging %d,%d,%d,%d with local ids %d,%d,%d,%d to flip\n",me,edge_tags[0],edge_tags[1],edge_tags[2],edge_tags[3],i,j_ind1,j_ind2,j_ind3);
+
+            printf("dtf of atom 0: ");
+            for (int mm = 0; mm < max_faces; mm++) {
+              printf("%d, ",dtf[i][mm]);
+            }
+            printf("\n dtf of atom 1: ");
+            for (int mm = 0; mm < max_faces; mm++) {
+              printf("%d, ",dtf[j_ind1][mm]);
+            }
+            printf("\n dtf of atom 2: ");
+            for (int mm = 0; mm < max_faces; mm++) {
+              printf("%d, ",dtf[j_ind2][mm]);
+            }
+            printf("\n dtf of atom 3: ");
+            for (int mm = 0; mm < max_faces; mm++) {
+              printf("%d, ",dtf[j_ind3][mm]);
+            }
+            printf("\n\n");
+
+            // Return and flag edge flip
+            return 1;
+        }
+    }
+  }
+
+  return 0;
+
+}
+
+/*------------------------------------------------------------------------*/
+
+bool FixVolVoro::check_same_edge(tagint *arr1, tagint *arr2) {
+    std::sort(arr1, arr1 + 4);
+    std::sort(arr2, arr2 + 4);
+    
+    for (int i = 0; i < 4; ++i) {
+        if (arr1[i] != arr2[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*------------------------------------------------------------------------*/
+
+void FixVolVoro::flip_edge(tagint *edge_tags)
+{
+
+  if (me == 0 && edge_tags[0] == 348) {
+    printf("\n Proc 0: inside flip_edge\n\n");
+  }
+
+  // Skip empty arrays (nothing flipped)
+  if (edge_tags[0] == 0) return;
+
+  // Initialize pointers and needed values
+  int natoms = atom->natoms;
+  int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
+  int nall = nlocal + nghost;
+  tagint **dtf = atom->iarray[index];
+
+  if (me == 0 && edge_tags[0] == 348) {
+    printf("\n Proc 0: Pointers initialized\n\n");
+  }
+
+  // Tags 0 and 2 need to delete an entry of dtf
+  tagint tag0 = edge_tags[0];
+  tagint tag2 = edge_tags[2];
+
+  // Tags 1 and 3 need to add an entry to dtf
+  tagint tag1 = edge_tags[1];
+  tagint tag3 = edge_tags[3];
+
+  if (me == 0 && edge_tags[0] == 348) {
+    printf("\n Proc 0: Tags defined\n\n");
+  }
+
+  // Local ids of each tag
+  int i0 = atom->map(tag0);
+  int i1 = atom->map(tag1);
+  int i2 = atom->map(tag2);
+  int i3 = atom->map(tag3);
+
+  if (me == 0 && tag0 == 348) {
+    printf("\n Local tags: %d, %d, %d, %d\n\n",i0,i1,i2,i3);
+  }
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~ Remove i2 from i0 ~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+
+  if (i0 > -1 && i0 < nlocal) {
+
+    printf("\n Proc %d: I own atom %d\n\n",me,tag0);
+
+    // First remove entry tag2
+    int success = 0;
+    for (int m = 0; m < max_faces; m++){
+        if (dtf[i0][m] == tag2) {
+            dtf[i0][m] = 0;
+            success = 1;
+            break;
+        }
+    }
+    if (success == 0) {
+      error->one(FLERR,"Edge already deleted");
+    }
+
+    // Move zero entries to the end of dtf[i]
+    int right = 0; // Points to the next position for a non-zero element
+    for (int left = 0; left < max_faces; ++left) {
+        if (dtf[i0][left] != 0) {
+            // Swap only if left and right are different
+            if (left != right) {
+                std::swap(dtf[i0][left], dtf[i0][right]);
+            }
+            right++;
+        }
+    }
+
+    // Perform cyclic arrangement
+    arrange_cyclic(dtf[i0],i0);
+  }
+  // if (j_i0 != i0 && j_i0 > -1) {
+  //   // First remove entry tag2
+  //   for (int m = 0; m < max_faces; m++){
+  //       if (dtf[j_i0][m] == tag2) {
+  //           dtf[j_i0][m] = 0;
+  //           break;
+  //       }
+  //   }
+
+  //   // Move zero entries to the end of dtf[i]
+  //   int right = 0; // Points to the next position for a non-zero element
+  //   for (int left = 0; left < max_faces; ++left) {
+  //       if (dtf[j_i0][left] != 0) {
+  //           // Swap only if left and right are different
+  //           if (left != right) {
+  //               std::swap(dtf[j_i0][left], dtf[j_i0][right]);
+  //           }
+  //           right++;
+  //       }
+  //   }
+
+  //   // Perform cyclic arrangement
+  //   arrange_cyclic(dtf[j_i0],j_i0);
+  // }
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~ Remove i0 from i2 ~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+
+  if (i2 > -1 && i2 < nlocal) {
+
+    printf("\n Proc %d: I own atom %d\n\n",me,tag2);
+
+    // First remove entry tag0
+    int success = 0;
+    for (int m = 0; m < max_faces; m++){
+        if (dtf[i2][m] == tag0) {
+            dtf[i2][m] = 0;
+            success = 1;
+            break;
+        }
+    }
+    if (success == 0) {
+      error->one(FLERR,"Edge already deleted");
+    }
+
+    // Move zero entries to the end of dtf[i]
+    int right = 0; // Points to the next position for a non-zero element
+    for (int left = 0; left < max_faces; ++left) {
+        if (dtf[i2][left] != 0) {
+            // Swap only if left and right are different
+            if (left != right) {
+                std::swap(dtf[i2][left], dtf[i2][right]);
+            }
+            right++;
+        }
+    }
+
+    // Perform cyclic arrangement
+    arrange_cyclic(dtf[i2],i2);
+  }
+  // if (j_i2 != i2 && j_i2 > -1) {
+  //   // First remove entry tag0
+  //   for (int m = 0; m < max_faces; m++){
+  //       if (dtf[j_i2][m] == tag0) {
+  //           dtf[j_i2][m] = 0;
+  //           break;
+  //       }
+  //   }
+
+  //   // Move zero entries to the end of dtf[i]
+  //   int right = 0; // Points to the next position for a non-zero element
+  //   for (int left = 0; left < max_faces; ++left) {
+  //       if (dtf[j_i2][left] != 0) {
+  //           // Swap only if left and right are different
+  //           if (left != right) {
+  //               std::swap(dtf[j_i2][left], dtf[j_i2][right]);
+  //           }
+  //           right++;
+  //       }
+  //   }
+
+  //   // Perform cyclic arrangement
+  //   arrange_cyclic(dtf[j_i2],j_i2);
+  // }
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~ Add i3 to i1 ~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+
+  if (i1 > -1 && i1 < nlocal) {
+
+    printf("\n Proc %d: I own atom %d\n\n",me,tag1);
+
+    // Add entry tag3 to atom tag1
+    int index1 = max_faces+1;
+    for (int m = 0; m < max_faces; m++){
+        if (dtf[i1][m] == 0) {
+            index1 = m;
+            break;
+        }
+    }
+    if (index1 == max_faces+1) {
+        error->one(FLERR,"Max faces exceeded");
+    }
+    dtf[i1][index1] = tag3;
+
+    // Perform cyclic arrangement
+    arrange_cyclic(dtf[i1],i1);
+  }
+  // if (j_i1 != i1 && j_i1 > -1) {
+
+  //   // Add entry tag3 to atom tag1
+  //   int index1 = max_faces+1;
+  //   for (int m = 0; m < max_faces; m++){
+  //       if (dtf[j_i1][m] == 0) {
+  //           index1 = m;
+  //           break;
+  //       }
+  //   }
+  //   if (index1 == max_faces+1) {
+  //       error->one(FLERR,"Max faces exceeded");
+  //   }
+  //   dtf[j_i1][index1] = tag3;
+
+  //   // Perform cyclic arrangement
+  //   arrange_cyclic(dtf[j_i1],j_i1);
+  // }
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~ Add i1 to i3 ~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+
+  if (i3 > -1 && i3 < nlocal) {
+
+    printf("\n Proc %d: I own atom %d\n\n",me,tag3);
+
+    // Add entry tag1 to atom tag3
+    int index1 = max_faces+1;
+    for (int m = 0; m < max_faces; m++){
+        if (dtf[i3][m] == 0) {
+            index1 = m;
+            break;
+        }
+    }
+    if (index1 == max_faces+1) {
+        error->one(FLERR,"Max faces exceeded");
+    }
+    dtf[i3][index1] = tag1;
+
+    // Perform cyclic arrangement
+    arrange_cyclic(dtf[i3],i3);
+  }
+  // if (j_i3 != i3 && j_i3 > -1) {
+
+  //   // Add entry tag1 to atom tag3
+  //   int index1 = max_faces+1;
+  //   for (int m = 0; m < max_faces; m++){
+  //       if (dtf[j_i3][m] == 0) {
+  //           index1 = m;
+  //           break;
+  //       }
+  //   }
+  //   if (index1 == max_faces+1) {
+  //       error->one(FLERR,"Max faces exceeded");
+  //   }
+  //   dtf[j_i3][index1] = tag1;
+
+  //   // Perform cyclic arrangement
+  //   arrange_cyclic(dtf[j_i3],j_i3);
+  // }
+
+}
+
+/*------------------------------------------------------------------------*/
+
 void FixVolVoro::arrange_cyclic(tagint *tag_vec, int icell)
 {
   double **x = atom->x;
@@ -999,7 +1294,7 @@ void FixVolVoro::arrange_cyclic(tagint *tag_vec, int icell)
   }
 
   // Calculate angle for all points
-  double theta[num_faces] = {0.0};
+  double theta[num_faces];
   int indices[num_faces];
   for (int i = 0; i < num_faces; i++) {
 
@@ -1136,7 +1431,7 @@ double FixVolVoro::calc_area(tagint *tag_vec, int icell, int num_faces){
   double **x = atom->x;
 
   // Coordinates of the vertices
-  double vert[num_faces][2] = {0.0};
+  double vert[num_faces][2];
 
   // Find coordinates of each vertex
   for (int n = 0; n < num_faces; n++) {

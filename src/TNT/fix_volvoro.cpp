@@ -66,12 +66,9 @@ FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
   MPI_Comm_size(world, &nprocs);
 
   dynamic_group_allow = 1;
-  energy_peratom_flag = 1;
-  virial_global_flag = virial_peratom_flag = 1;
-  thermo_energy = thermo_virial = 1;
-
-  respa_level_support = 1;
-  ilevel_respa = 0;
+  virial_global_flag  = 1;
+  virial_peratom_flag = 1;
+  thermo_virial = 1;
 
   // Parse first two arguments: elasticity and preferred area
   Elasticity = utils::numeric(FLERR,arg[3],false,lmp);
@@ -154,12 +151,8 @@ int FixVolVoro::setmask()
   datamask_read = datamask_modify = 0;
 
   int mask = 0;
-  // mask |= POST_INTEGRATE;
-  // mask |= POST_INTEGRATE_RESPA;
   mask |= PRE_FORCE;
   mask |= POST_FORCE;
-  mask |= POST_FORCE_RESPA;
-  mask |= MIN_POST_FORCE;
   return mask;
 }
 
@@ -197,10 +190,6 @@ void FixVolVoro::init()
 {
   // set indices and check validity of all computes and variables
 
-  if (utils::strmatch(update->integrate_style, "^respa")) {
-    ilevel_respa = (dynamic_cast<Respa *>(update->integrate))->nlevels - 1;
-    if (respa_level >= 0) ilevel_respa = MIN(respa_level, ilevel_respa);
-  }
 }
 
 
@@ -244,6 +233,7 @@ void FixVolVoro::setup(int vflag)
       error->one(FLERR,"Fix volbulk needs ghost atoms from further away");
     }
     tagint tagj = atom->tag[j];
+    if (tagj == atom->tag[i]) error->one(FLERR,"Atom edge with itself");
 
     // Find next empty space for atom i and fill it with tagj
     for (int m = 0; m < max_faces; m++) {
@@ -267,21 +257,10 @@ void FixVolVoro::setup(int vflag)
   nmax = atom->nmax;
   memory->create(total_virial,nmax,6,"volvoro:total_virial");
 
-  if (utils::strmatch(update->integrate_style, "^verlet"))
-      post_force(vflag);
-  else {
-    (dynamic_cast<Respa *>(update->integrate))->copy_flevel_f(ilevel_respa);
-      post_force_respa(vflag, ilevel_respa, 0);
-    (dynamic_cast<Respa *>(update->integrate))->copy_f_flevel(ilevel_respa);
-  }
-
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixVolVoro::min_setup(int vflag)
-{
+  // Run single timestep
+  pre_force(vflag);
   post_force(vflag);
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -289,20 +268,24 @@ void FixVolVoro::min_setup(int vflag)
 void FixVolVoro::pre_force(int vflag)
 {
 
-  // acquire updated ghost atom positions
-  // necessary b/c are calling this after integrate, but before Verlet comm
-  comm->forward_comm();
-
-  // Communicate dtf for ghost info
-  comm->forward_comm(this,max_faces);
-
-  // Local atom count for proc syncing
+  // Atom counts
+  int natoms = atom->natoms;
   int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
+  int nall = nlocal + nghost;
+
+  // Confirm cyclic permutation of dtf
+  tagint **dtf = atom->iarray[index];
+  for (int i = 0; i < nlocal; i++) {
+    arrange_cyclic(dtf[i],i);
+  }
+
+  // Communicate dtf
+  comm->forward_comm(this,max_faces);
 
   // Full triangulation is rebuilt if any proc has flip = 1
   // Initialize flag to 1 to begin the loop
-  int flip_all = 1;
-
+  int flip_all = 1; 
   while (flip_all > 0) {
 
     // Empty pointer to edge tags
@@ -310,9 +293,6 @@ void FixVolVoro::pre_force(int vflag)
 
     // Check for edge flips on this proc
     int flip = check_edges(edge_tags);
-    if (flip == 1) {
-      printf("\n Proc %d: found edge flip %d,%d,%d,%d\n\n",me,edge_tags[0],edge_tags[1],edge_tags[2],edge_tags[3]);
-    }
     if (flip == 1) flip += me;
 
     // Check other procs to see if a flip has occurred
@@ -325,103 +305,27 @@ void FixVolVoro::pre_force(int vflag)
       int flip_rank = flip_all-1;
 
       // All processors take edge_tags from flip_rank
-      MPI_Barrier(world);
+      // MPI_Barrier(world);
       MPI_Bcast(&edge_tags,4,MPI_INT,flip_rank,world);
-      MPI_Barrier(world);
-
-      printf("\n Proc %d: flipping edge %d,%d,%d,%d\n",me,edge_tags[0],edge_tags[1],edge_tags[2],edge_tags[3]);
+      // MPI_Barrier(world);
 
       // Perform edge flipping on owned procs
       flip_edge(edge_tags);
-
-      printf("Proc %d: Success!\n\n",me);
-
-      // IDEA: BARRIER BEFORE COMM????
-
-      // // First update my edges if needed
-      // if (flip == 1) {
-      //   flip_edge(edge_tags);
-      // }
-
-      // // ranks of directly neighboring procs
-      // int left = comm->procneigh[0][0];
-      // int right = comm->procneigh[0][1];
-      // int top = comm->procneigh[1][0];
-      // int bottom = comm->procneigh[1][1];
-
-      // // Boolean value for determining if an edge needs to be flipped
-      // bool same_edge;
-
-      // // Send left receive right
-      // tagint recv_right[4];
-      // MPI_Sendrecv(edge_tags, 4, MPI_INT, left, 0, recv_right, 4, MPI_INT, right, 0, world, MPI_STATUS_IGNORE);
-      // same_edge = check_same_edge(edge_tags,recv_right);
-      // if (same_edge == false) flip_edge(recv_right);
-
-      // // Send right receive left
-      // tagint recv_left[4];
-      // MPI_Sendrecv(edge_tags, 4, MPI_INT, right, 1, recv_left, 4, MPI_INT, left, 1, world, MPI_STATUS_IGNORE);
-      // bool same_me_left = check_same_edge(edge_tags,recv_left);
-      // bool same_left_right = check_same_edge(recv_right,recv_left);
-      // same_edge = same_me_left || same_left_right;
-      // if (same_edge == false) flip_edge(recv_left);
-
-      // // Send top receive bottom
-      // tagint recv_bottom[4];
-      // MPI_Sendrecv(edge_tags, 4, MPI_INT, top, 2, recv_bottom, 4, MPI_INT, bottom, 2, world, MPI_STATUS_IGNORE);
-      // bool same_me_bottom = check_same_edge(edge_tags,recv_bottom);
-      // bool same_left_bottom = check_same_edge(recv_bottom,recv_left);
-      // bool same_right_bottom = check_same_edge(recv_bottom,recv_right);
-      // same_edge = same_me_bottom || same_left_bottom || same_right_bottom;
-      // if (same_edge == false) flip_edge(recv_bottom);
-
-      // // Send bottom seceive top
-      // tagint recv_top[4];
-      // MPI_Sendrecv(edge_tags, 4, MPI_INT, bottom, 3, recv_top, 4, MPI_INT, top, 3, world, MPI_STATUS_IGNORE);
-      // bool same_me_top = check_same_edge(edge_tags,recv_top);
-      // bool same_left_top = check_same_edge(recv_top,recv_left);
-      // bool same_right_top = check_same_edge(recv_top,recv_right);
-      // bool same_bottom_top = check_same_edge(recv_top,recv_bottom);
-      // same_edge = same_me_top || same_left_top || same_right_top || same_bottom_top;
-      // if (same_edge == false) flip_edge(recv_top);
+      // MPI_Barrier(world);
 
       // Communicate final dtf
       comm->forward_comm(this,max_faces);
 
     }
-
   }
-
-}
-
-/* ---------------------------------------------------------------------- */
-
-// void FixVolVoro::post_integrate_respa(int ilevel, int /*iloop*/)
-// {
-//   if (ilevel == ilevel_respa-1) post_integrate();
-// }
-
-/* ---------------------------------------------------------------------- */
-
-void FixVolVoro::post_force(int vflag)
-{
-  double **x = atom->x;
-  double **f = atom->f;
-  int *mask = atom->mask;
-  tagint *tag = atom->tag;
-
-  int natoms = atom->natoms;
-  int nlocal = atom->nlocal;
-  int nghost = atom->nghost;
-  int nall = nlocal + nghost;
-
-  tagint **dtf = atom->iarray[index];
 
   // For future implementation (nevery)
   if (update->ntimestep % nevery) return;
 
-  // virial setup
-  v_init(vflag);
+  // Flags to atom classes
+  double **x = atom->x;
+  double **f = atom->f;
+  int *mask = atom->mask;
 
   // Possibly resize arrays
   if (atom->nmax > nmax) {
@@ -445,14 +349,6 @@ void FixVolVoro::post_force(int vflag)
       }
     }
   }
-
-  // Invoke compute
-//   modify->clearstep_compute();
-//   vcompute = modify->get_compute_by_id(id_compute_voronoi);
-//   if (!(vcompute->invoked_flag & Compute::INVOKED_PERATOM)) {
-//     vcompute->compute_peratom();
-//     vcompute->invoked_flag |= Compute::INVOKED_PERATOM;
-//   }
 
   // Define pointer to fix_store
   if (flag_store_init) fstore = modify->get_fix_by_id(id_fix_store);
@@ -602,14 +498,14 @@ void FixVolVoro::post_force(int vflag)
     f[i][0] += fx;
     f[i][1] += fy;
 
-    // Vector for virial calculation (from vertex to atom i)
-    rvec[0] = x[i][0] - vert[0];
-    rvec[1] = x[i][1] - vert[1];
+    // // Vector for virial calculation (from vertex to atom i)
+    // rvec[0] = x[i][0] - vert[0];
+    // rvec[1] = x[i][1] - vert[1];
 
-    // Virial contributions
-    total_virial[i][0] += fx*rvec[0];
-    total_virial[i][1] += fy*rvec[1];
-    total_virial[i][3] += fx*rvec[1];
+    // // Virial contributions
+    // total_virial[i][0] += fx*rvec[0];
+    // total_virial[i][1] += fy*rvec[1];
+    // total_virial[i][3] += fx*rvec[1];
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
     // ~~~~~~~~~~~~~~~~ Force calculation on jleft ~~~~~~~~~~~~~~~~~~~~~~//
@@ -627,12 +523,12 @@ void FixVolVoro::post_force(int vflag)
     f[jleft][1] += fy;
 
     // Vector for virial calculation (from vertex to atom jleft)
-    // rvec[0] = vert[0] - x[jleft][0];
-    // rvec[1] = vert[1] - x[jleft][1];
-    // rvec[0] = x[i][0] - x[jleft][0];
-    // rvec[1] = x[i][1] - x[jleft][1];
-    rvec[0] = x[jleft][0] - vert[0];
-    rvec[1] = x[jleft][1] - vert[1];
+    // rvec[0] = x[jleft][0] - vert[0];
+    // rvec[1] = x[jleft][1] - vert[1];
+
+    // Vector for virial (from i to j)
+    rvec[0] = x[i][0] - x[jleft][0];
+    rvec[1] = x[i][1] - x[jleft][1];
 
     // Virial contributions
     total_virial[jleft][0] += fx*rvec[0];
@@ -655,12 +551,12 @@ void FixVolVoro::post_force(int vflag)
     f[jright][1] += fy;
 
     // Vector for virial calculation (from vertex to atom jright)
-    // rvec[0] = vert[0] - x[jright][0];
-    // rvec[1] = vert[1] - x[jright][1];
-    // rvec[0] = x[i][0] - x[jright][0];
-    // rvec[1] = x[i][1] - x[jright][1];
-    rvec[0] = x[jright][0] - vert[0];
-    rvec[1] = x[jright][1] - vert[1];
+    // rvec[0] = x[jright][0] - vert[0];
+    // rvec[1] = x[jright][1] - vert[1];
+
+    // Vector for virial (from i to j)
+    rvec[0] = x[i][0] - x[jright][0];
+    rvec[1] = x[i][1] - x[jright][1];
 
     // Virial contributions
     total_virial[jright][0] += fx*rvec[0];
@@ -745,14 +641,14 @@ void FixVolVoro::post_force(int vflag)
         f[i][0] += fx;
         f[i][1] += fy;
 
-        // Vector for virial calculation (from vertex to atom i)
-        rvec[0] = x[i][0] - vert[0];
-        rvec[1] = x[i][1] - vert[1];
+        // // Vector for virial calculation (from vertex to atom i)
+        // rvec[0] = x[i][0] - vert[0];
+        // rvec[1] = x[i][1] - vert[1];
 
-        // Virial contributions
-        total_virial[i][0] += fx*rvec[0];
-        total_virial[i][1] += fy*rvec[1];
-        total_virial[i][3] += fx*rvec[1];
+        // // Virial contributions
+        // total_virial[i][0] += fx*rvec[0];
+        // total_virial[i][1] += fy*rvec[1];
+        // total_virial[i][3] += fx*rvec[1];
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
         // ~~~~~~~~~~~~~~~~ Force calculation on jleft ~~~~~~~~~~~~~~~~~~~~~~//
@@ -770,12 +666,12 @@ void FixVolVoro::post_force(int vflag)
         f[jleft][1] += fy;
 
         // Vector for virial calculation (from vertex to atom jleft)
-        // rvec[0] = vert[0] - x[jleft][0];
-        // rvec[1] = vert[1] - x[jleft][1];
-        // rvec[0] = x[i][0] - x[jleft][0];
-        // rvec[1] = x[i][1] - x[jleft][1];
-        rvec[0] = x[jleft][0] - vert[0];
-        rvec[1] = x[jleft][1] - vert[1];
+        // rvec[0] = x[jleft][0] - vert[0];
+        // rvec[1] = x[jleft][1] - vert[1];
+
+        // Vector for virial (from i to j)
+        rvec[0] = x[i][0] - x[jleft][0];
+        rvec[1] = x[i][1] - x[jleft][1];
 
         // Virial contributions
         total_virial[jleft][0] += fx*rvec[0];
@@ -798,12 +694,12 @@ void FixVolVoro::post_force(int vflag)
         f[jright][1] += fy;
 
         // Vector for virial calculation (from vertex to atom jright)
-        // rvec[0] = vert[0] - x[jright][0];
-        // rvec[1] = vert[1] - x[jright][1];
-        // rvec[0] = x[i][0] - x[jright][0];
-        // rvec[1] = x[i][1] - x[jright][1];
-        rvec[0] = x[jright][0] - vert[0];
-        rvec[1] = x[jright][1] - vert[1];
+        // rvec[0] = x[jright][0] - vert[0];
+        // rvec[1] = x[jright][1] - vert[1];
+
+        // Vector for virial (from i to j)
+        rvec[0] = x[i][0] - x[jright][0];
+        rvec[1] = x[i][1] - x[jright][1];
 
         // Virial contributions
         total_virial[jright][0] += fx*rvec[0];
@@ -828,18 +724,8 @@ void FixVolVoro::post_force(int vflag)
     }
   }
 
-  // Reverse communication of force vectors
-  comm->reverse_comm();
-
   // Reverse communication of virial contributions
   comm->reverse_comm(this,6);
-
-  // Tally virial contributions of owned atoms
-  for (int i = 0; i < nlocal; i++) {
-    if (evflag) {
-      v_tally(i, total_virial[i]);
-    }
-  }
  
   // Store dtf for outputting
   if (peratom_flag) {
@@ -854,16 +740,21 @@ void FixVolVoro::post_force(int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void FixVolVoro::post_force_respa(int vflag, int ilevel, int /*iloop*/)
+void FixVolVoro::post_force(int vflag)
 {
-  if (ilevel == ilevel_respa) post_force(vflag);
-}
 
-/* ---------------------------------------------------------------------- */
+  // virial setup
+  v_init(vflag);
 
-void FixVolVoro::min_post_force(int vflag)
-{
-  post_force(vflag);
+  // Tally virial contributions of owned atoms
+  for (int i = 0; i < atom->nlocal; i++) {
+    total_virial[i][0] *= -1;
+    total_virial[i][1] *= -1;
+    total_virial[i][3] *= -1;
+
+    v_tally(i, total_virial[i]);
+  }
+
 }
 
 /*------------------------------------------------------------------------*/
@@ -963,26 +854,6 @@ int FixVolVoro::check_edges(tagint *edge_tags)
             edge_tags[2] = atom->tag[j_ind2];
             edge_tags[3] = atom->tag[j_ind3];
 
-            printf("\n Proc %d: flagging %d,%d,%d,%d with local ids %d,%d,%d,%d to flip\n",me,edge_tags[0],edge_tags[1],edge_tags[2],edge_tags[3],i,j_ind1,j_ind2,j_ind3);
-
-            printf("dtf of atom 0: ");
-            for (int mm = 0; mm < max_faces; mm++) {
-              printf("%d, ",dtf[i][mm]);
-            }
-            printf("\n dtf of atom 1: ");
-            for (int mm = 0; mm < max_faces; mm++) {
-              printf("%d, ",dtf[j_ind1][mm]);
-            }
-            printf("\n dtf of atom 2: ");
-            for (int mm = 0; mm < max_faces; mm++) {
-              printf("%d, ",dtf[j_ind2][mm]);
-            }
-            printf("\n dtf of atom 3: ");
-            for (int mm = 0; mm < max_faces; mm++) {
-              printf("%d, ",dtf[j_ind3][mm]);
-            }
-            printf("\n\n");
-
             // Return and flag edge flip
             return 1;
         }
@@ -995,26 +866,8 @@ int FixVolVoro::check_edges(tagint *edge_tags)
 
 /*------------------------------------------------------------------------*/
 
-bool FixVolVoro::check_same_edge(tagint *arr1, tagint *arr2) {
-    std::sort(arr1, arr1 + 4);
-    std::sort(arr2, arr2 + 4);
-    
-    for (int i = 0; i < 4; ++i) {
-        if (arr1[i] != arr2[i]) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/*------------------------------------------------------------------------*/
-
 void FixVolVoro::flip_edge(tagint *edge_tags)
 {
-
-  if (me == 0 && edge_tags[0] == 348) {
-    printf("\n Proc 0: inside flip_edge\n\n");
-  }
 
   // Skip empty arrays (nothing flipped)
   if (edge_tags[0] == 0) return;
@@ -1026,10 +879,6 @@ void FixVolVoro::flip_edge(tagint *edge_tags)
   int nall = nlocal + nghost;
   tagint **dtf = atom->iarray[index];
 
-  if (me == 0 && edge_tags[0] == 348) {
-    printf("\n Proc 0: Pointers initialized\n\n");
-  }
-
   // Tags 0 and 2 need to delete an entry of dtf
   tagint tag0 = edge_tags[0];
   tagint tag2 = edge_tags[2];
@@ -1038,27 +887,17 @@ void FixVolVoro::flip_edge(tagint *edge_tags)
   tagint tag1 = edge_tags[1];
   tagint tag3 = edge_tags[3];
 
-  if (me == 0 && edge_tags[0] == 348) {
-    printf("\n Proc 0: Tags defined\n\n");
-  }
-
   // Local ids of each tag
   int i0 = atom->map(tag0);
   int i1 = atom->map(tag1);
   int i2 = atom->map(tag2);
   int i3 = atom->map(tag3);
 
-  if (me == 0 && tag0 == 348) {
-    printf("\n Local tags: %d, %d, %d, %d\n\n",i0,i1,i2,i3);
-  }
-
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~ Remove i2 from i0 ~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
   if (i0 > -1 && i0 < nlocal) {
-
-    printf("\n Proc %d: I own atom %d\n\n",me,tag0);
 
     // First remove entry tag2
     int success = 0;
@@ -1088,38 +927,12 @@ void FixVolVoro::flip_edge(tagint *edge_tags)
     // Perform cyclic arrangement
     arrange_cyclic(dtf[i0],i0);
   }
-  // if (j_i0 != i0 && j_i0 > -1) {
-  //   // First remove entry tag2
-  //   for (int m = 0; m < max_faces; m++){
-  //       if (dtf[j_i0][m] == tag2) {
-  //           dtf[j_i0][m] = 0;
-  //           break;
-  //       }
-  //   }
-
-  //   // Move zero entries to the end of dtf[i]
-  //   int right = 0; // Points to the next position for a non-zero element
-  //   for (int left = 0; left < max_faces; ++left) {
-  //       if (dtf[j_i0][left] != 0) {
-  //           // Swap only if left and right are different
-  //           if (left != right) {
-  //               std::swap(dtf[j_i0][left], dtf[j_i0][right]);
-  //           }
-  //           right++;
-  //       }
-  //   }
-
-  //   // Perform cyclic arrangement
-  //   arrange_cyclic(dtf[j_i0],j_i0);
-  // }
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~ Remove i0 from i2 ~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
   if (i2 > -1 && i2 < nlocal) {
-
-    printf("\n Proc %d: I own atom %d\n\n",me,tag2);
 
     // First remove entry tag0
     int success = 0;
@@ -1149,38 +962,12 @@ void FixVolVoro::flip_edge(tagint *edge_tags)
     // Perform cyclic arrangement
     arrange_cyclic(dtf[i2],i2);
   }
-  // if (j_i2 != i2 && j_i2 > -1) {
-  //   // First remove entry tag0
-  //   for (int m = 0; m < max_faces; m++){
-  //       if (dtf[j_i2][m] == tag0) {
-  //           dtf[j_i2][m] = 0;
-  //           break;
-  //       }
-  //   }
-
-  //   // Move zero entries to the end of dtf[i]
-  //   int right = 0; // Points to the next position for a non-zero element
-  //   for (int left = 0; left < max_faces; ++left) {
-  //       if (dtf[j_i2][left] != 0) {
-  //           // Swap only if left and right are different
-  //           if (left != right) {
-  //               std::swap(dtf[j_i2][left], dtf[j_i2][right]);
-  //           }
-  //           right++;
-  //       }
-  //   }
-
-  //   // Perform cyclic arrangement
-  //   arrange_cyclic(dtf[j_i2],j_i2);
-  // }
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~~~~ Add i3 to i1 ~~~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
   if (i1 > -1 && i1 < nlocal) {
-
-    printf("\n Proc %d: I own atom %d\n\n",me,tag1);
 
     // Add entry tag3 to atom tag1
     int index1 = max_faces+1;
@@ -1198,32 +985,12 @@ void FixVolVoro::flip_edge(tagint *edge_tags)
     // Perform cyclic arrangement
     arrange_cyclic(dtf[i1],i1);
   }
-  // if (j_i1 != i1 && j_i1 > -1) {
-
-  //   // Add entry tag3 to atom tag1
-  //   int index1 = max_faces+1;
-  //   for (int m = 0; m < max_faces; m++){
-  //       if (dtf[j_i1][m] == 0) {
-  //           index1 = m;
-  //           break;
-  //       }
-  //   }
-  //   if (index1 == max_faces+1) {
-  //       error->one(FLERR,"Max faces exceeded");
-  //   }
-  //   dtf[j_i1][index1] = tag3;
-
-  //   // Perform cyclic arrangement
-  //   arrange_cyclic(dtf[j_i1],j_i1);
-  // }
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~~~~ Add i1 to i3 ~~~~~~~~~~~~~~~~~~~~~~~~~~~//
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
   if (i3 > -1 && i3 < nlocal) {
-
-    printf("\n Proc %d: I own atom %d\n\n",me,tag3);
 
     // Add entry tag1 to atom tag3
     int index1 = max_faces+1;
@@ -1241,24 +1008,6 @@ void FixVolVoro::flip_edge(tagint *edge_tags)
     // Perform cyclic arrangement
     arrange_cyclic(dtf[i3],i3);
   }
-  // if (j_i3 != i3 && j_i3 > -1) {
-
-  //   // Add entry tag1 to atom tag3
-  //   int index1 = max_faces+1;
-  //   for (int m = 0; m < max_faces; m++){
-  //       if (dtf[j_i3][m] == 0) {
-  //           index1 = m;
-  //           break;
-  //       }
-  //   }
-  //   if (index1 == max_faces+1) {
-  //       error->one(FLERR,"Max faces exceeded");
-  //   }
-  //   dtf[j_i3][index1] = tag1;
-
-  //   // Perform cyclic arrangement
-  //   arrange_cyclic(dtf[j_i3],j_i3);
-  // }
 
 }
 
@@ -1267,30 +1016,14 @@ void FixVolVoro::flip_edge(tagint *edge_tags)
 void FixVolVoro::arrange_cyclic(tagint *tag_vec, int icell)
 {
   double **x = atom->x;
-  int num_faces = 0;
-  int jLeft;
 
-  // Find bottom-left point
-  jLeft = domain->closest_image(icell,atom->map(tag_vec[0]));
-  for (int i = 0; i < max_faces; i++) {
-
-    // Break if there are no more faces
-    if (tag_vec[i] == 0) break;
-
-    // Local id of current face
-    int jtmp = atom->map(tag_vec[i]);
-    if (jtmp < 0)
-      error->one(FLERR,"Fix bond/dynamic needs ghost atoms "
-                "from further away");
-    int j = domain->closest_image(icell,jtmp);
-
-    // Add to the number of faces
-    num_faces += 1;
-
-    // Determine if this point is lower than bottomLeft
-    if (x[j][1] < x[jLeft][1] || (x[j][1] == x[jLeft][1] && x[j][0] < x[jLeft][0]) ) {
-        jLeft = j;
-    }
+  // Determine the number of faces for this atom
+  int num_faces;
+  for (int n = 0; n < max_faces; n++) {
+      if (tag_vec[n] == 0) {
+          num_faces = n;
+          break;
+      }
   }
 
   // Calculate angle for all points
@@ -1301,7 +1034,7 @@ void FixVolVoro::arrange_cyclic(tagint *tag_vec, int icell)
     // Local id of current face
     int jtmp = atom->map(tag_vec[i]);
     int j = domain->closest_image(icell,jtmp);
-    theta[i] = atan2(x[j][1] - x[jLeft][1],x[j][0] - x[jLeft][0]);
+    theta[i] = atan2(x[j][1] - x[icell][1],x[j][0] - x[icell][0]);
 
     // indices array for sorting
     indices[i] = i;
@@ -1476,7 +1209,7 @@ double FixVolVoro::calc_area(tagint *tag_vec, int icell, int num_faces){
     Area += 0.5*(vert[mu1][0]*vert[mu2][1] - vert[mu1][1]*vert[mu2][0]);
 
   }
-  
+
   return Area;
 
 }

@@ -33,13 +33,8 @@ class FixVolVoro : public Fix {
   void post_constructor();
   void init() override;
   void setup(int) override;
-  void min_setup(int) override;
   void pre_force(int) override;
-  // void post_integrate() override;
-  // void post_integrate_respa(int, int) override;
   void post_force(int) override;
-  void post_force_respa(int, int, int) override;
-  void min_post_force(int) override;
 
   int pack_forward_comm(int, int *, double *, int, int *) override;
   void unpack_forward_comm(int, int, double *) override;
@@ -85,9 +80,6 @@ class FixVolVoro : public Fix {
 
   // For checking edge flips
   int check_edges(tagint *);
-
-  // For checking if two edge vectors are the same
-  bool check_same_edge(tagint *,tagint *);
 
   // For flipping edges
   void flip_edge(tagint *);

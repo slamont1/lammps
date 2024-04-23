@@ -1,4 +1,5 @@
-/* -*- c++ -*- ----------------------------------------------------------
+// clang-format off
+/* ----------------------------------------------------------------------
    LAMMPS - Large-scale Atomic/Molecular Massively Parallel Simulator
    https://www.lammps.org/, Sandia National Laboratories
    Steve Plimpton, sjplimp@sandia.gov
@@ -11,156 +12,396 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-#ifdef FIX_CLASS
-// clang-format off
-FixStyle(bond/rupture,FixBondRupture);
-// clang-format on
-#else
+#include "fix_bond_rupture.h"
 
-#ifndef LMP_FIX_BOND_RUPTURE_H
-#define LMP_FIX_BOND_RUPTURE_H
+#include "atom.h"
+#include "atom_vec.h"
+#include "bond.h"
+#include "comm.h"
+#include "domain.h"
+#include "error.h"
+#include "force.h"
+#include "group.h"
+#include "memory.h"
+#include "modify.h"
+#include "neighbor.h"
+#include "neigh_list.h"
+#include "neigh_request.h"
+#include "pair.h"
+#include "respa.h"
+#include "update.h"
 
-#include "fix.h"
+#include <cstring>
+#include <utility>
+#include "math_const.h"
 
-namespace LAMMPS_NS {
+using namespace LAMMPS_NS;
+using namespace FixConst;
 
-class FixBondRupture : public Fix {
- public:
-  FixBondRupture(class LAMMPS *, int, char **);
-  virtual ~FixBondRupture();
-  int setmask();
-  void post_constructor();
-  void init();
-  void init_list(int, class NeighList *) override;
-  void setup(int) override;
-  void post_integrate();
-  void post_integrate_respa(int, int);
+/* ---------------------------------------------------------------------- */
 
-  int pack_forward_comm(int, int *, double *, int, int *);
-  void unpack_forward_comm(int, int, double *);
-  double memory_usage();
+FixBondRupture::FixBondRupture(LAMMPS *lmp, int narg, char **arg) :
+  Fix(lmp, narg, arg)
+{
+  if (narg < 5) error->all(FLERR,"Illegal fix bond/rupture command");
 
- protected:
-  int me, nprocs;
-  int iatomtype,jatomtype;
-  int atype, btype;
-  int imaxbond, jmaxbond, maxbond;
-  double r_critical, r2_critical;
-  int flag_mol, flag_skip;
-  int skip;
+  MPI_Comm_rank(world,&me);
+  MPI_Comm_size(world,&nprocs);
 
-  int overflow;
+  btype = utils::inumeric(FLERR,arg[3],false,lmp);
+  double rcrit = utils::numeric(FLERR,arg[4],false,lmp);
 
-  int size_bonds_and_neighbors;
-  int size_bond_lists;
+  dynamic_group_allow = 1;
+  force_reneighbor = 1;
+  next_reneighbor = -1;
 
-  int nmax;
-  int *influenced;
+  if (btype < 1 || btype > atom->nbondtypes)
+    error->all(FLERR,"Invalid bond type in fix bond/rupture command");
+  if (rcrit < 0.0) error->all(FLERR,"Illegal fix bond/rupture command");
+  rcritsq = rcrit*rcrit;
 
-  tagint *copy;
+  // Flags for optional settings
+  flag_mol = 0;
 
-  class NeighList *list;
+  // Parse remaining arguments
+  int iarg = 5;
+  while (iarg < narg) {
+    if (strcmp(arg[iarg],"mol") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/rupture command");
+      flag_mol = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
+      iarg += 2;
+    } else error->all(FLERR,"Illegal fix bond/rupture command");
+  }
 
-  int prop_atom_flag, nvalues, overlay_flag;
+  // Set forward communication size
+  comm_forward = 1+atom->maxspecial;
 
-  int countflag, commflag;
-  int nlevels_respa;
+}
 
-  void process_broken(int, int);
-  void rebuild_special_one(int);
+/* ---------------------------------------------------------------------- */
 
-  int dedup(int, int, tagint *);
+FixBondRupture::~FixBondRupture()
+{
 
-  char *new_fix_id;
-  int index;
+}
 
-};
+/* ---------------------------------------------------------------------- */
 
-}    // namespace LAMMPS_NS
+int FixBondRupture::setmask()
+{
+  int mask = 0;
+  mask |= POST_INTEGRATE;
+  mask |= PRE_FORCE;
+  return mask;
+}
 
-#endif
-#endif
+/* ---------------------------------------------------------------------- */
 
-/* ERROR/WARNING messages:
+// void FixBondDynamic::post_constructor()
+// {
+//   new_fix_id = utils::strdup(id + std::string("RUPTURE_UPDATE_SPECIAL_BONDS"));
+//   modify->add_fix(fmt::format("{} {} property/atom i2_fbd_{} {} ghost yes",new_fix_id, group->names[igroup],id,std::to_string(maxbond)));
 
-E: Illegal ... command
+// }
 
-Self-explanatory.  Check the input script syntax and compare to the
-documentation for the command.  You can use -echo screen as a
-command-line option when running LAMMPS to see the offending line.
+/* ---------------------------------------------------------------------- */
 
-E: Invalid atom type in fix bond/create/dynamic command
+void FixBondRupture::init()
+{
 
-Self-explanatory.
+//   if (utils::strmatch(update->integrate_style,"^respa"))
+//     nlevels_respa = ((Respa *) update->integrate)->nlevels;
 
-E: Invalid bond type in fix bond/create/dynamic command
+}
 
-Self-explanatory.
+/* ---------------------------------------------------------------------- */
 
-E: Cannot use fix bond/create/dynamic with non-molecular systems
+void FixBondRupture::post_integrate()
+{
 
-Only systems with bonds that can be changed can be used.  Atom_style
-template does not qualify.
+  // atom count
+  int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
+  int nall = nlocal + nghost;
 
-E: Inconsistent iparam/jparam values in fix bond/create/dynamic command
+  // bond information
+  int *num_bond = atom->num_bond;
+  int **bond_type = atom->bond_type;
+  tagint **bond_atom = atom->bond_atom;
 
-If itype and jtype are the same, then their maxbond and newtype
-settings must also be the same.
+  // bond list from neighbor class
+  int **bondlist = neighbor->bondlist;
+  int nbondlist = neighbor->nbondlist;
 
-E: Fix bond/create/dynamic cutoff is longer than pairwise cutoff
+  // atom positions
+  double **x = atom->x;
 
-This is not allowed because bond creation is done using the
-pairwise neighbor list.
+  // acquire updated ghost atom positions
+  // necessary b/c are calling this after integrate, but before Verlet comm
+  comm->forward_comm();
 
-E: Fix bond/create/dynamic angle type is invalid
+  // loop through neighbor bond list
+  int break_count = 0;
+  for (int n = 0; n < nbondlist; n++) {
 
-Self-explanatory.
+    // skip bond if already broken
+    if (bondlist[n][2] <= 0) continue;
 
-E: Fix bond/create/dynamic dihedral type is invalid
+    int i1 = bondlist[n][0];
+    int i2 = bondlist[n][1];
+    int type = bondlist[n][2];
 
-Self-explanatory.
+    // Skip bonds of wrong type
+    if (type != btype) continue;
 
-E: Fix bond/create/dynamic improper type is invalid
+    // Ensure pair is always ordered such that r0 points in
+    // a consistent direction and to ensure numerical operations
+    // are identical to minimize the possibility that a bond straddling
+    // an mpi grid (newton off) doesn't break on one proc but not the other
+    if (atom->tag[i2] < atom->tag[i1]) {
+      int itmp = i1;
+      i1 = i2;
+      i2 = itmp;
+    }
 
-Self-explanatory.
+    // Find the distance between these two atoms
+    double delx = x[i1][0] - x[i2][0];
+    double dely = x[i1][1] - x[i2][1];
+    double delz = x[i1][2] - x[i2][2];
+    domain->minimum_image(delx, dely, delz);
+    double rsq = delx*delx + dely*dely + delz*delz;
 
-E: Cannot yet use fix bond/create/dynamic with this improper style
+    // Break bonds past the critical length
+    if (rsq >= rcritsq) {
 
-This is a current restriction in LAMMPS.
+        // Tally break_count to trigger reneighboring
+        break_count = 1;
 
-E: Fix bond/create/dynamic needs ghost atoms from further away
+        // Process broken bond
+        bondlist[n][2] = 0;
+        process_broken(i1,i2);
+    }
+  }
 
-This is because the fix needs to walk bonds to a certain distance to
-acquire needed info, The comm_modify cutoff command can be used to
-extend the communication range.
+  int break_all = 0;
+  MPI_Allreduce(&break_count, &break_all, 1, MPI_INT, MPI_MAX, world);
 
-E: New bond exceeded bonds per atom in fix bond/create/dynamic
+  // trigger reneighboring
+  if (break_all == 1) next_reneighbor = update->ntimestep;
+  if (break_all == 0) return;
 
-See the read_data command for info on setting the "extra bond per
-atom" header value to allow for additional bonds to be formed.
+  update_special();
 
-E: New bond exceeded special list size in fix bond/create/dynamic
+  // communicate final partner and 1-2 special neighbors
+  // 1-2 neighs already reflect broken bonds
+  comm->forward_comm(this);
 
-See the special_bonds extra command for info on how to leave space in
-the special bonds list to allow for additional bonds to be formed.
+  update_topology();
 
-E: Fix bond/create/dynamic induced too many angles/dihedrals/impropers per atom
+}
 
-See the read_data command for info on setting the "extra angle per
-atom", etc header values to allow for additional angles, etc to be
-formed.
+/* ----------------------------------------------------------------------
+  Update special bond list and atom bond arrays, empty broken/created lists
+------------------------------------------------------------------------- */
 
-E: Special list size exceeded in fix bond/create/dynamic
+void FixBondRupture::update_special()
+{
+  int i, j, m, n1;
+  tagint tagi, tagj;
+  int nlocal = atom->nlocal;
 
-See the read_data command for info on setting the "extra special per
-atom" header value to allow for additional special values to be
-stored.
+  tagint *slist;
+  int **nspecial = atom->nspecial;
+  tagint **special = atom->special;
 
-W: Fix bond/create/dynamic is used multiple times or with fix bond/break - may not work as expected
+  for (auto const &it : new_broken_pairs) {
+    tagi = it.first;
+    tagj = it.second;
+    i = atom->map(tagi);
+    j = atom->map(tagj);
 
-When using fix bond/create/dynamic multiple times or in combination with
-fix bond/break, the individual fix instances do not share information
-about changes they made at the same time step and thus it may result
-in unexpected behavior.
+      if (i < 0 || j < 0) {
+        error->one(FLERR,"Fix bond/rupture needs ghost atoms "
+                    "from further away");
+      }
 
-*/
+    // remove i from special bond list for atom j and vice versa
+    // ignore n2, n3 since 1-3, 1-4 special factors required to be 1.0
+    if (i < nlocal) {
+      slist = special[i];
+      n1 = nspecial[i][0];
+      for (m = 0; m < n1; m++)
+        if (slist[m] == tagj) break;
+      for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
+      nspecial[i][0]--;
+      nspecial[i][1] = nspecial[i][2] = nspecial[i][0];
+    }
+
+    if (j < nlocal) {
+      slist = special[j];
+      n1 = nspecial[j][0];
+      for (m = 0; m < n1; m++)
+        if (slist[m] == tagi) break;
+      for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
+      nspecial[j][0]--;
+      nspecial[j][1] = nspecial[j][2] = nspecial[j][0];
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------
+  Update special lists for recently broken/created bonds
+  Assumes appropriate atom/bond arrays were updated, e.g. had called
+      neighbor->add_temporary_bond(i1, i2, btype);
+------------------------------------------------------------------------- */
+
+void FixBondRupture::update_topology()
+{
+
+  int nlocal = atom->nlocal;
+  tagint *tag = atom->tag;
+
+  // In theory could communicate a list of broken bonds to neighboring processors here
+  // to remove restriction that users use Newton bond off
+
+  for (int ilist = 0; ilist < neighbor->nlist; ilist++) {
+    NeighList *list = neighbor->lists[ilist];
+
+    // Skip copied lists, will update original
+    if (list->copy) continue;
+
+    int *numneigh = list->numneigh;
+    int **firstneigh = list->firstneigh;
+
+    for (auto const &it : new_broken_pairs) {
+      tagint tag1 = it.first;
+      tagint tag2 = it.second;
+      int i1 = atom->map(tag1);
+      int i2 = atom->map(tag2);
+
+      if (i1 < 0 || i2 < 0) {
+        error->one(FLERR,"Fix bond/rupture needs ghost atoms "
+                    "from further away");
+      }
+
+      // Loop through atoms of owned atoms i j
+      if (i1 < nlocal) {
+        int *jlist = firstneigh[i1];
+        int jnum = numneigh[i1];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          j &= SPECIALMASK;    // Clear special bond bits
+          if (tag[j] == tag2) jlist[jj] = j;
+        }
+      }
+
+      if (i2 < nlocal) {
+        int *jlist = firstneigh[i2];
+        int jnum = numneigh[i2];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          j &= SPECIALMASK;    // Clear special bond bits
+          if (tag[j] == tag1) jlist[jj] = j;
+        }
+      }
+    }
+  }
+
+  new_broken_pairs.clear();
+
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixBondRupture::process_broken(int i, int j)
+{
+
+  // First add the pair to new_broken_pairs
+  auto tag_pair = std::make_pair(atom->tag[i], atom->tag[j]);
+  new_broken_pairs.push_back(tag_pair);
+
+  // Manually search and remove from atom arrays
+  // need to remove in case special bonds arrays rebuilt
+  int nlocal = atom->nlocal;
+
+  tagint *tag = atom->tag;
+  tagint **bond_atom = atom->bond_atom;
+  int **bond_type = atom->bond_type;
+  int *num_bond = atom->num_bond;
+
+  if (i < nlocal) {
+    int n = num_bond[i];
+
+    int done = 0;
+    for (int m = 0; m < n; m++) {
+      if (bond_atom[i][m] == tag[j]) {
+        for (int k = m; k < n - 1; k++) {
+          bond_type[i][k] = bond_type[i][k + 1];
+          bond_atom[i][k] = bond_atom[i][k + 1];
+        }
+        num_bond[i]--;
+        break;
+      }
+      if (done) break;
+    }
+  }
+
+  if (j < nlocal) {
+    int n = num_bond[j];
+
+    int done = 0;
+    for (int m = 0; m < n; m++) {
+      if (bond_atom[j][m] == tag[i]) {
+        for (int k = m; k < n - 1; k++) {
+          bond_type[j][k] = bond_type[j][k + 1];
+          bond_atom[j][k] = bond_atom[j][k + 1];
+        }
+        num_bond[j]--;
+        break;
+      }
+      if (done) break;
+    }
+  }
+
+}
+
+/* ---------------------------------------------------------------------- */
+
+int FixBondRupture::pack_forward_comm(int n, int *list, double *buf,
+                                    int /*pbc_flag*/, int * /*pbc*/)
+{
+
+  int **nspecial = atom->nspecial;
+  tagint **special = atom->special;
+
+  int m = 0;
+  for (int i = 0; i < n; i++) {
+    int j = list[i];
+    int ns = nspecial[j][0];
+    buf[m++] = ubuf(ns).d;
+    for (int k = 0; k < ns; k++) {
+        buf[m++] = ubuf(special[j][k]).d;
+    }
+  }
+  return m;
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixBondRupture::unpack_forward_comm(int n, int first, double *buf)
+{
+
+  int **nspecial = atom->nspecial;
+  tagint **special = atom->special;
+
+  int m = 0;
+  int last = first + n;
+  for (int i = first; i < last; i++) {
+    int ns = (int) ubuf(buf[m++]).i;
+    nspecial[i][0] = ns;
+    for (int j = 0; j < ns; j++) {
+        special[i][j] = (tagint) ubuf(buf[m++]).i;
+    }
+  }
+    
+}

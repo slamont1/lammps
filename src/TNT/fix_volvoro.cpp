@@ -65,10 +65,20 @@ FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world, &nprocs);
 
+  // In case atoms change groups
   dynamic_group_allow = 1;
+
+  // For virial pressure contributions
   virial_global_flag  = 1;
   virial_peratom_flag = 1;
   thermo_virial = 1;
+
+  // For global energy contribution
+  scalar_flag = 1;
+  global_freq = 1;
+  extscalar = 1;
+  energy_global_flag = 1;
+  thermo_energy = 1;
 
   // Parse first two arguments: elasticity and preferred area
   Elasticity = utils::numeric(FLERR,arg[3],false,lmp);
@@ -84,7 +94,13 @@ FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
 
   // parse values for optional args
   flag_store_init = 0;
+  flag_fluid = 0;
   id_fix_store = nullptr;
+
+  // default values for fluid system
+  eps_a  = 0;
+  cdens0 = 0;
+  f0     = 0;
 
   int iarg = 7;
   while (iarg < narg) {
@@ -97,8 +113,21 @@ FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
       if (!fstore) error->all(FLERR,"Could not find fix ID {} for voronoi fix/store", id_fix_store);
 
       iarg += 2;
+    } else if (strcmp(arg[iarg],"fluid") == 0) {
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix voronoi command");
+      flag_fluid = 1;
+
+      eps_a  = utils::numeric(FLERR,arg[iarg+1],false,lmp);
+      cdens0 = utils::numeric(FLERR,arg[iarg+2],false,lmp);
+      f0     = utils::numeric(FLERR,arg[iarg+3],false,lmp);
+
+      iarg += 4;
     } else error->all(FLERR,"Illegal fix voronoi command");
   }
+
+  // error checks
+  if (flag_fluid && !flag_store_init)
+    error->all(FLERR,"Store_init must be used with fluid in fix volcomp");
 
   // Default nevery for now
   nevery = 1;
@@ -106,13 +135,18 @@ FixVolVoro::FixVolVoro(LAMMPS *lmp, int narg, char **arg) :
   // Countflag to only initialize once
   countflag = 0;
 
+  // Initialize energy counting
+  eflag = 0;
+  evoro = 0.0;
+
   // Initialize nmax and virial pointer
   nmax = atom->nmax;
   total_virial = nullptr;
+  fnet = nullptr;
 
   // Specify attributes for dumping connectivity (dtf)
   peratom_flag = 1;
-  size_peratom_cols = max_faces;
+  size_peratom_cols = max_faces+2;
   peratom_freq = 1;
 
   // perform initial allocation of atom-based arrays
@@ -132,6 +166,7 @@ FixVolVoro::~FixVolVoro()
   delete[] id_fix_store;
   
   memory->destroy(total_virial);
+  memory->destroy(fnet);
 
   // unregister callbacks to this fix from atom class
   if (peratom_flag) {
@@ -198,8 +233,13 @@ void FixVolVoro::init()
 void FixVolVoro::setup(int vflag)
 {
 
-  // Return if this has already been invoked
-  if (countflag) return;
+  // Only perform energy calculations if already invoked
+  if (countflag) {
+    // Initialize energetic quantities
+    pre_force(vflag);
+    post_force(vflag);
+    return;
+  }
   countflag = 1;
 
   // Ensure that computes have been invoked
@@ -256,6 +296,7 @@ void FixVolVoro::setup(int vflag)
   // Create memory allocations
   nmax = atom->nmax;
   memory->create(total_virial,nmax,6,"volvoro:total_virial");
+  memory->create(fnet,nmax,2,"volvoro:fnet");
 
   // Run single timestep
   pre_force(vflag);
@@ -267,6 +308,10 @@ void FixVolVoro::setup(int vflag)
 
 void FixVolVoro::pre_force(int vflag)
 {
+
+  // Reset energy counter
+  eflag = 0;
+  evoro = 0.0;
 
   // Atom counts
   int natoms = atom->natoms;
@@ -305,13 +350,10 @@ void FixVolVoro::pre_force(int vflag)
       int flip_rank = flip_all-1;
 
       // All processors take edge_tags from flip_rank
-      // MPI_Barrier(world);
       MPI_Bcast(&edge_tags,4,MPI_INT,flip_rank,world);
-      // MPI_Barrier(world);
 
       // Perform edge flipping on owned procs
       flip_edge(edge_tags);
-      // MPI_Barrier(world);
 
       // Communicate final dtf
       comm->forward_comm(this,max_faces);
@@ -324,14 +366,15 @@ void FixVolVoro::pre_force(int vflag)
 
   // Flags to atom classes
   double **x = atom->x;
-  double **f = atom->f;
   int *mask = atom->mask;
 
   // Possibly resize arrays
   if (atom->nmax > nmax) {
     memory->destroy(total_virial);
+    memory->destroy(fnet);
     nmax = atom->nmax;
     memory->create(total_virial,nmax,6,"volvoro:total_virial");
+    memory->create(fnet,nmax,2,"volvoro:fnet");
   }
 
   // Initialize arrays to zero
@@ -339,14 +382,19 @@ void FixVolVoro::pre_force(int vflag)
     for (int j = 0; j < 5; j++) {
         total_virial[i][j] = 0.0;
     }
+    for (int j = 0; j < 2; j++) {
+      fnet[i][j] = 0.0;
+    }
   }
 
   // Reset array-atom if outputting
   if (peratom_flag) {
     for (int i = 0; i < nlocal; i++) {
-      for (int n = 0; n < max_faces; n++) {
+      for (int n = 0; n < max_faces+1; n++) {
         array_atom[i][n] = 0.0;
       }
+      array_atom[i][max_faces] = 0.0;
+      array_atom[i][max_faces+1] = 0.0;
     }
   }
 
@@ -398,18 +446,68 @@ void FixVolVoro::pre_force(int vflag)
         }
     }
 
-    // Volume and pressure due to volume change
+    // Current cell volume
     double voro_volume = calc_area(dtf[i],i,num_faces);
-    if (voro_volume < 0) {
-      error->one(FLERR,"Calculated negative volume");
+    if (voro_volume <= 0.0) {
+      error->one(FLERR,"Calculated negative or zero volume");
     }
+
+    // Reference cell volume
     double voro_volume0;
     if (flag_store_init) {
         voro_volume0 = fstore->vector_atom[i];
     } else {
         voro_volume0 = VolPref;
     }
-    double pressure = Elasticity*(voro_volume-voro_volume0)*0.5;
+
+    // Pressure due to volume change (dPsi/dVolume)
+    double pressure = 0.0;
+    if (flag_fluid) {
+      // Critical cell volume
+      double volume_crit = f0*voro_volume0;
+
+      // Number of particles
+      double np = cdens0*voro_volume0;
+
+      // Error if critical volume exceeded
+      if (voro_volume < volume_crit) {
+        // Issue a warning
+        error->warning(FLERR, "Cell volume too small", update->ntimestep);
+
+        // if less than half, error out
+        if (voro_volume < 0.5*volume_crit) {
+          printf("Cell tag: %d \n",atom->tag[i]);
+          error->one(FLERR,"Critical cell volume exceeded");
+        }
+
+        // Correct to 1.01*volume_crit
+        voro_volume = 1.01*volume_crit;
+      }
+
+      // Calculate pressure
+      pressure  = 1.0/(voro_volume - f0*voro_volume0);
+      pressure -= eps_a*f0*voro_volume0/voro_volume/voro_volume;
+      pressure *= -np;
+
+      // Tally energy
+      double etmp = 0.0;
+      etmp += log(voro_volume - f0*voro_volume0);
+      etmp += eps_a*f0*voro_volume0/voro_volume;
+      etmp *= -np;
+      evoro += etmp;
+    } else {
+      // Calculate pressure
+      pressure = Elasticity*(voro_volume-voro_volume0);
+
+      // Tally energy
+      evoro += 0.5*Elasticity*(voro_volume-voro_volume0)*(voro_volume-voro_volume0);
+    }
+
+    // Store current cell area and pressure
+    if (peratom_flag) {
+      array_atom[i][max_faces] = voro_volume;
+      array_atom[i][max_faces+1] = pressure;
+    }
 
     // Coords of atom i
     double x0 = x[i][0];
@@ -493,19 +591,10 @@ void FixVolVoro::pre_force(int vflag)
     calc_jacobian(DT,i,Jac);
 
     // Forces on i from current vertex
-    fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-    f[i][0] += fx;
-    f[i][1] += fy;
-
-    // // Vector for virial calculation (from vertex to atom i)
-    // rvec[0] = x[i][0] - vert[0];
-    // rvec[1] = x[i][1] - vert[1];
-
-    // // Virial contributions
-    // total_virial[i][0] += fx*rvec[0];
-    // total_virial[i][1] += fy*rvec[1];
-    // total_virial[i][3] += fx*rvec[1];
+    fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+    fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+    fnet[i][0] += fx;
+    fnet[i][1] += fy;
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
     // ~~~~~~~~~~~~~~~~ Force calculation on jleft ~~~~~~~~~~~~~~~~~~~~~~//
@@ -517,23 +606,19 @@ void FixVolVoro::pre_force(int vflag)
     calc_jacobian(DT,jleft,Jac);
 
     // Forces on i from current vertex
-    fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-    f[jleft][0] += fx;
-    f[jleft][1] += fy;
-
-    // Vector for virial calculation (from vertex to atom jleft)
-    // rvec[0] = x[jleft][0] - vert[0];
-    // rvec[1] = x[jleft][1] - vert[1];
+    fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+    fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+    fnet[jleft][0] += fx;
+    fnet[jleft][1] += fy;
 
     // Vector for virial (from i to j)
     rvec[0] = x[i][0] - x[jleft][0];
     rvec[1] = x[i][1] - x[jleft][1];
 
     // Virial contributions
-    total_virial[jleft][0] += fx*rvec[0];
-    total_virial[jleft][1] += fy*rvec[1];
-    total_virial[jleft][3] += fx*rvec[1];
+    total_virial[jleft][0] -= fx*rvec[0];
+    total_virial[jleft][1] -= fy*rvec[1];
+    total_virial[jleft][3] -= fx*rvec[1];
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
     // ~~~~~~~~~~~~~~~~ Force calculation on jright ~~~~~~~~~~~~~~~~~~~~~//
@@ -545,23 +630,19 @@ void FixVolVoro::pre_force(int vflag)
     calc_jacobian(DT,jright,Jac);
 
     // Forces on i from current vertex
-    fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-    f[jright][0] += fx;
-    f[jright][1] += fy;
-
-    // Vector for virial calculation (from vertex to atom jright)
-    // rvec[0] = x[jright][0] - vert[0];
-    // rvec[1] = x[jright][1] - vert[1];
+    fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+    fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+    fnet[jright][0] += fx;
+    fnet[jright][1] += fy;
 
     // Vector for virial (from i to j)
     rvec[0] = x[i][0] - x[jright][0];
     rvec[1] = x[i][1] - x[jright][1];
 
     // Virial contributions
-    total_virial[jright][0] += fx*rvec[0];
-    total_virial[jright][1] += fy*rvec[1];
-    total_virial[jright][3] += fx*rvec[1];
+    total_virial[jright][0] -= fx*rvec[0];
+    total_virial[jright][1] -= fy*rvec[1];
+    total_virial[jright][3] -= fx*rvec[1];
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
     // ~~~~~~~~~~~~~~~~ Permute vertices cyclically ~~~~~~~~~~~~~~~~~~~~~//
@@ -636,19 +717,10 @@ void FixVolVoro::pre_force(int vflag)
         calc_jacobian(DT,i,Jac);
 
         // Forces on i from current vertex
-        fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-        f[i][0] += fx;
-        f[i][1] += fy;
-
-        // // Vector for virial calculation (from vertex to atom i)
-        // rvec[0] = x[i][0] - vert[0];
-        // rvec[1] = x[i][1] - vert[1];
-
-        // // Virial contributions
-        // total_virial[i][0] += fx*rvec[0];
-        // total_virial[i][1] += fy*rvec[1];
-        // total_virial[i][3] += fx*rvec[1];
+        fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+        fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+        fnet[i][0] += fx;
+        fnet[i][1] += fy;
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
         // ~~~~~~~~~~~~~~~~ Force calculation on jleft ~~~~~~~~~~~~~~~~~~~~~~//
@@ -660,23 +732,19 @@ void FixVolVoro::pre_force(int vflag)
         calc_jacobian(DT,jleft,Jac);
 
         // Forces on i from current vertex
-        fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-        f[jleft][0] += fx;
-        f[jleft][1] += fy;
-
-        // Vector for virial calculation (from vertex to atom jleft)
-        // rvec[0] = x[jleft][0] - vert[0];
-        // rvec[1] = x[jleft][1] - vert[1];
+        fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+        fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+        fnet[jleft][0] += fx;
+        fnet[jleft][1] += fy;
 
         // Vector for virial (from i to j)
         rvec[0] = x[i][0] - x[jleft][0];
         rvec[1] = x[i][1] - x[jleft][1];
 
         // Virial contributions
-        total_virial[jleft][0] += fx*rvec[0];
-        total_virial[jleft][1] += fy*rvec[1];
-        total_virial[jleft][3] += fx*rvec[1];
+        total_virial[jleft][0] -= fx*rvec[0];
+        total_virial[jleft][1] -= fy*rvec[1];
+        total_virial[jleft][3] -= fx*rvec[1];
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
         // ~~~~~~~~~~~~~~~~ Force calculation on jright ~~~~~~~~~~~~~~~~~~~~~//
@@ -688,23 +756,19 @@ void FixVolVoro::pre_force(int vflag)
         calc_jacobian(DT,jright,Jac);
 
         // Forces on i from current vertex
-        fx = -pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-        f[jright][0] += fx;
-        f[jright][1] += fy;
-
-        // Vector for virial calculation (from vertex to atom jright)
-        // rvec[0] = x[jright][0] - vert[0];
-        // rvec[1] = x[jright][1] - vert[1];
+        fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+        fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+        fnet[jright][0] += fx;
+        fnet[jright][1] += fy;
 
         // Vector for virial (from i to j)
         rvec[0] = x[i][0] - x[jright][0];
         rvec[1] = x[i][1] - x[jright][1];
 
         // Virial contributions
-        total_virial[jright][0] += fx*rvec[0];
-        total_virial[jright][1] += fy*rvec[1];
-        total_virial[jright][3] += fx*rvec[1];
+        total_virial[jright][0] -= fx*rvec[0];
+        total_virial[jright][1] -= fy*rvec[1];
+        total_virial[jright][3] -= fx*rvec[1];
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
         // ~~~~~~~~~~~~~~~~ Permute vertices cyclically ~~~~~~~~~~~~~~~~~~~~~//
@@ -724,8 +788,8 @@ void FixVolVoro::pre_force(int vflag)
     }
   }
 
-  // Reverse communication of virial contributions
-  comm->reverse_comm(this,6);
+  // Reverse communication of force and virial contributions
+  comm->reverse_comm(this,8);
  
   // Store dtf for outputting
   if (peratom_flag) {
@@ -746,12 +810,13 @@ void FixVolVoro::post_force(int vflag)
   // virial setup
   v_init(vflag);
 
+  // Force vector
+  double **f = atom->f;
+
   // Tally virial contributions of owned atoms
   for (int i = 0; i < atom->nlocal; i++) {
-    total_virial[i][0] *= -1;
-    total_virial[i][1] *= -1;
-    total_virial[i][3] *= -1;
-
+    f[i][0] += fnet[i][0];
+    f[i][1] += fnet[i][1];
     v_tally(i, total_virial[i]);
   }
 
@@ -1246,8 +1311,8 @@ void FixVolVoro::unpack_forward_comm(int n, int first, double *buf)
 
   tagint **dtf = atom->iarray[index];
   for (i = first; i < last; i++) {
-      for (int j = 0; j < max_faces; j++) {
-        dtf[i][j] = (tagint) ubuf(buf[m++]).i;
+    for (int j = 0; j < max_faces; j++) {
+      dtf[i][j] = (tagint) ubuf(buf[m++]).i;
     }
   }
 
@@ -1266,6 +1331,9 @@ int FixVolVoro::pack_reverse_comm(int n, int first, double *buf)
     for (int v = 0; v < 5; v++) {
         buf[m++] = total_virial[i][v];
     }
+    for (int v = 0; v < 2; v++) {
+        buf[m++] = fnet[i][v];
+    }
   }
   return m;
 }
@@ -1282,6 +1350,9 @@ void FixVolVoro::unpack_reverse_comm(int n, int *list, double *buf)
     j = list[i];
     for (int v = 0; v < 5; v++) {
       total_virial[j][v] += buf[m++];
+    }
+    for (int v = 0; v < 2; v++) {
+      fnet[j][v] += buf[m++];
     }
   }
 }
@@ -1344,7 +1415,22 @@ void FixVolVoro::set_arrays(int i)
 double FixVolVoro::memory_usage()
 {
   int nmax = atom->nmax;
-  double bytes = (double)nmax*6 * sizeof(double);
+  double bytes = (double)nmax*8 * sizeof(double);
   if (peratom_flag) bytes += (double)nmax * size_peratom_cols * sizeof(double);
   return bytes;
+}
+
+/* ----------------------------------------------------------------------
+   Bulk energy global summation
+------------------------------------------------------------------------- */
+
+double FixVolVoro::compute_scalar()
+{
+  // only sum across procs one time
+
+  if (eflag == 0) {
+    MPI_Allreduce(&evoro,&evoro_all,1,MPI_DOUBLE,MPI_SUM,world);
+    eflag = 1;
+  }
+  return evoro_all;
 }

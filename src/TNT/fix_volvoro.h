@@ -45,6 +45,7 @@ class FixVolVoro : public Fix {
   void grow_arrays(int) override;
   void set_arrays(int) override;
   double memory_usage() override;
+  double compute_scalar() override;
   
   FILE *fp;
 
@@ -63,10 +64,19 @@ class FixVolVoro : public Fix {
  
   char *id_compute_voronoi, *id_fix_store;
 
-  int ilevel_respa;
+  // For global energy
+  int eflag;
+  double evoro, evoro_all;
+
+  // For fluid bulk resistance
+  int flag_fluid;
+  double eps_a, cdens0, f0;
 
   // Total virial on each cell
   double **total_virial;
+
+  // Total force on each particle
+  double **fnet;
 
   // Index of fix property/atom for storing DT faces
   char *new_fix_id;

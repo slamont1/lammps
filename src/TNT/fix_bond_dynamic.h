@@ -100,6 +100,12 @@ class FixBondDynamic : public Fix {
   // Internal methods/functions
   void process_broken(int, int);
   void process_created(int, int);
+  void update_topology();
+
+  // Create an array to store bonds broken this timestep (new)
+  // and since the last neighbor list build
+  std::vector<std::pair<tagint, tagint>> new_broken_pairs;
+  std::vector<std::pair<tagint, tagint>> new_created_pairs;
 
 };
 

@@ -45,12 +45,6 @@ class FixBondRupture : public Fix {
   // Flags for keywords
   int flag_mol;
 
-//   // Character array for id of fix property/atom
-//   char *new_fix_id;
-
-//   // Pointer for FixUpdateSpecialBonds
-//   class FixUpdateSpecialBonds *fix_update_special_bonds;
-
   // Internal methods/functions
   void process_broken(int, int);
   void update_special();

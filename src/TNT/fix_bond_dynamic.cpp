@@ -149,7 +149,7 @@ FixBondDynamic::FixBondDynamic(LAMMPS *lmp, int narg, char **arg) :
   npos = nullptr;
   partners_success = nullptr;
 
-  comm_forward = maxbond;
+  comm_forward = 1+atom->maxspecial;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -845,6 +845,12 @@ void FixBondDynamic::post_integrate()
   commflag = 1;
   comm->forward_comm(this,maxbond);
 
+  // forward communication of special lists
+  commflag = 5;
+  comm->forward_comm(this);
+
+  update_topology();
+
   // trigger reneighboring
   next_reneighbor = update->ntimestep;
 }
@@ -853,6 +859,10 @@ void FixBondDynamic::post_integrate()
 
 void FixBondDynamic::process_broken(int i, int j)
 {
+
+  // First add the pair to new_broken_pairs
+  auto tag_pair = std::make_pair(atom->tag[i], atom->tag[j]);
+  new_broken_pairs.push_back(tag_pair);
 
   // Manually search and remove from atom arrays
   // need to remove in case special bonds arrays rebuilt
@@ -863,9 +873,10 @@ void FixBondDynamic::process_broken(int i, int j)
   int **bond_type = atom->bond_type;
   int *num_bond = atom->num_bond;
 
-  int n;
   if (i < nlocal) {
-    n = num_bond[i];
+    int n = num_bond[i];
+
+    int done = 0;
     for (int m = 0; m < n; m++) {
       if (bond_atom[i][m] == tag[j]) {
         for (int k = m; k < n - 1; k++) {
@@ -875,11 +886,14 @@ void FixBondDynamic::process_broken(int i, int j)
         num_bond[i]--;
         break;
       }
+      if (done) break;
     }
   }
 
   if (j < nlocal) {
-    n = num_bond[j];
+    int n = num_bond[j];
+
+    int done = 0;
     for (int m = 0; m < n; m++) {
       if (bond_atom[j][m] == tag[i]) {
         for (int k = m; k < n - 1; k++) {
@@ -889,43 +903,37 @@ void FixBondDynamic::process_broken(int i, int j)
         num_bond[j]--;
         break;
       }
+      if (done) break;
     }
   }
 
   // Update special neighbor list
-  int n1, n3;
-
   tagint *slist;
   int **nspecial = atom->nspecial;
   tagint **special = atom->special;
 
   // remove i from special bond list for atom j and vice versa
+  // ignore n2, n3 since 1-3, 1-4 special factors required to be 1.0
   if (i < nlocal) {
     slist = special[i];
-    n1 = nspecial[i][0];
-    for (int m = 0; m < n1; m++) {
-      if (slist[m] == atom->tag[j]) {
-        for (int k = m; k < n1; k++) {
-          special[i][k] = special[i][k+1];
-        }
-        nspecial[i][0]--;
-        break;
-      }
-    }
+    int n1 = nspecial[i][0];
+    int m;
+    for (m = 0; m < n1; m++)
+      if (slist[m] == tag[j]) break;
+    for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
+    nspecial[i][0]--;
+    nspecial[i][1] = nspecial[i][2] = nspecial[i][0];
   }
 
   if (j < nlocal) {
     slist = special[j];
-    n1 = nspecial[j][0];
-    for (int m = 0; m < n1; m++) {
-      if (slist[m] == atom->tag[i]) {
-        for (int k = m; k < n1; k++) {
-          special[j][k] = special[j][k+1];
-        }
-        nspecial[j][0]--;
-        break;
-      }
-    }
+    int n1 = nspecial[j][0];
+    int m;
+    for (int m = 0; m < n1; m++)
+      if (slist[m] == tag[i]) break;
+    for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
+    nspecial[j][0]--;
+    nspecial[j][1] = nspecial[j][2] = nspecial[j][0];
   }
 
 }
@@ -934,82 +942,164 @@ void FixBondDynamic::process_broken(int i, int j)
 
 void FixBondDynamic::process_created(int i, int j)
 {
-  int n1,n2,n3,m,n;
-  tagint id1,id2;
-  tagint *slist;
 
-  tagint *tag = atom->tag;
-  int **nspecial = atom->nspecial;
-  tagint **special = atom->special;
+  // First add the pair to new_created_pairs
+  auto tag_pair = std::make_pair(atom->tag[i], atom->tag[j]);
+  new_created_pairs.push_back(tag_pair);
 
   tagint **bond_atom = atom->bond_atom;
   int **bond_type = atom->bond_type;
   int *num_bond = atom->num_bond;
 
-  int newton_bond = force->newton_bond;
   int nlocal = atom->nlocal;
 
   // Add bonds to atom class for i and j
   if (i < nlocal) {
     if (num_bond[i] == atom->bond_per_atom)
-      error->one(FLERR,"New bond exceeded bonds per atom in fix bond/create/dynamic");
+      error->one(FLERR,"New bond exceeded bonds per atom in fix bond/dynamic");
     bond_type[i][num_bond[i]] = btype;
-    bond_atom[i][num_bond[i]] = tag[j];
+    bond_atom[i][num_bond[i]] = atom->tag[j];
     num_bond[i]++;
   }
 
   if (j < nlocal) {
     if (num_bond[j] == atom->bond_per_atom)
-      error->one(FLERR,"New bond exceeded bonds per atom in fix bond/create/dynamic");
+      error->one(FLERR,"New bond exceeded bonds per atom in fix bond/dynamic");
     bond_type[j][num_bond[j]] = btype;
-    bond_atom[j][num_bond[j]] = tag[i];
+    bond_atom[j][num_bond[j]] = atom->tag[i];
     num_bond[j]++;
   }
 
-  // add a 1-2 neighbor to special bond list for atom I
-  // atom J will also do this, whatever proc it is on
-  // need to first remove tag[j] from later in list if it appears
-  // prevents list from overflowing, will be rebuilt in rebuild_special_one()
+  // add i to special bond list for atom j and vice versa
+  // ignore n2, n3 since 1-3, 1-4 special factors required to be 1.0
 
-  n1 = nspecial[i][0];
-  n2 = nspecial[i][1];
-  n3 = nspecial[i][2];
-  for (m = n1; m < n3; m++)
-    if (special[i][m] == tag[j]) break;
-  if (m < n3) {
-    for (n = m; n < n3-1; n++) special[i][n] = special[i][n+1];
-    n3--;
-    if (m < n2) n2--;
+  int **nspecial = atom->nspecial;
+  tagint **special = atom->special;
+
+  if (i < nlocal) {
+    int n1 = nspecial[i][0];
+    if (n1 >= atom->maxspecial)
+      error->one(FLERR, "Special list size exceeded in fix bond/dynamic");
+    special[i][n1] = atom->tag[j];
+    nspecial[i][0] += 1;
+    nspecial[i][1] = nspecial[i][2] = nspecial[i][0];
   }
-  if (n3 == atom->maxspecial)
-    error->one(FLERR,
-                "New bond exceeded special list size in fix bond/create/dynamic");
-  for (m = n3; m > n1; m--) special[i][m] = special[i][m-1];
-  special[i][n1] = tag[j];
-  nspecial[i][0] = n1+1;
-  nspecial[i][1] = n2+1;
-  nspecial[i][2] = n3+1;
 
   if (j < nlocal) {
-    n1 = nspecial[j][0];
-    n2 = nspecial[j][1];
-    n3 = nspecial[j][2];
-    for (m = n1; m < n3; m++)
-      if (special[j][m] == tag[i]) break;
-    if (m < n3) {
-      for (n = m; n < n3-1; n++) special[j][n] = special[j][n+1];
-      n3--;
-      if (m < n2) n2--;
-    }
-    if (n3 == atom->maxspecial)
-      error->one(FLERR,
-                  "New bond exceeded special list size in fix bond/create/dynamic");
-    for (m = n3; m > n1; m--) special[j][m] = special[j][m-1];
-    special[j][n1] = tag[i];
-    nspecial[j][0] = n1+1;
-    nspecial[j][1] = n2+1;
-    nspecial[j][2] = n3+1;
+    int n1 = nspecial[j][0];
+    if (n1 >= atom->maxspecial)
+      error->one(FLERR, "Special list size exceeded in fix bond/dynamic");
+    special[j][n1] = atom->tag[i];
+    nspecial[j][0] += 1;
+    nspecial[j][1] = nspecial[j][2] = nspecial[j][0];
   }
+
+}
+
+/* ----------------------------------------------------------------------
+  Update special lists for recently broken/created bonds
+  Assumes appropriate atom/bond arrays were updated, e.g. had called
+      neighbor->add_temporary_bond(i1, i2, btype);
+------------------------------------------------------------------------- */
+
+void FixBondDynamic::update_topology()
+{
+
+  int nlocal = atom->nlocal;
+  tagint *tag = atom->tag;
+
+  // In theory could communicate a list of broken bonds to neighboring processors here
+  // to remove restriction that users use Newton bond off
+
+  for (int ilist = 0; ilist < neighbor->nlist; ilist++) {
+    NeighList *list = neighbor->lists[ilist];
+
+    // Skip copied lists, will update original
+    if (list->copy) continue;
+
+    int *numneigh = list->numneigh;
+    int **firstneigh = list->firstneigh;
+
+    for (auto const &it : new_broken_pairs) {
+      tagint tag1 = it.first;
+      tagint tag2 = it.second;
+      int i1 = atom->map(tag1);
+      int i2 = atom->map(tag2);
+
+      if (i1 < 0 || i2 < 0) {
+        error->one(FLERR,"Fix bond/dynamic needs ghost atoms "
+                    "from further away");
+      }
+
+      // Loop through atoms of owned atoms i j
+      if (i1 < nlocal) {
+        int *jlist = firstneigh[i1];
+        int jnum = numneigh[i1];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          j &= SPECIALMASK;    // Clear special bond bits
+          if (tag[j] == tag2) jlist[jj] = j;
+        }
+      }
+
+      if (i2 < nlocal) {
+        int *jlist = firstneigh[i2];
+        int jnum = numneigh[i2];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          j &= SPECIALMASK;    // Clear special bond bits
+          if (tag[j] == tag1) jlist[jj] = j;
+        }
+      }
+    }
+  }
+
+  for (int ilist = 0; ilist < neighbor->nlist; ilist++) {
+    NeighList *list = neighbor->lists[ilist];
+
+    // Skip copied lists, will update original
+    if (list->copy) continue;
+
+    int *numneigh = list->numneigh;
+    int **firstneigh = list->firstneigh;
+
+    for (auto const &it : new_created_pairs) {
+      tagint tag1 = it.first;
+      tagint tag2 = it.second;
+      int i1 = atom->map(tag1);
+      int i2 = atom->map(tag2);
+
+      if (i1 < 0 || i2 < 0) {
+        error->one(FLERR,"Fix bond/dynamic needs ghost atoms "
+                    "from further away");
+      }
+
+      // Loop through atoms of owned atoms i j
+      if (i1 < nlocal) {
+        int *jlist = firstneigh[i1];
+        int jnum = numneigh[i1];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          if (((j >> SBBITS) & 3) != 0) continue;               // Skip bonded pairs
+          if (tag[j] == tag2) jlist[jj] = j ^ (1 << SBBITS);    // Add 1-2 special bond bits
+        }
+      }
+
+      if (i2 < nlocal) {
+        int *jlist = firstneigh[i2];
+        int jnum = numneigh[i2];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          if (((j >> SBBITS) & 3) != 0) continue;               // Skip bonded pairs
+          if (tag[j] == tag1) jlist[jj] = j ^ (1 << SBBITS);    // Add 1-2 special bond bits
+        }
+      }
+    }
+  }
+
+  new_broken_pairs.clear();
+  new_created_pairs.clear();
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1024,18 +1114,14 @@ void FixBondDynamic::post_integrate_respa(int ilevel, int /*iloop*/)
 int FixBondDynamic::pack_forward_comm(int n, int *list, double *buf,
                                     int /*pbc_flag*/, int * /*pbc*/)
 {
-  int i,j,k,m,ns;
-
-  m = 0;
+  int m = 0;
 
   if (commflag == 1) {
-      int tmp1, tmp2;
-      index = atom->find_custom(utils::strdup(std::string("fbd_") + id),tmp1,tmp2);
       tagint **fbd = atom->iarray[index];
 
-      for (i = 0; i < n; i++) {
-        j = list[i];
-        for (k = 0; k < maxbond; k++) {
+      for (int i = 0; i < n; i++) {
+        int j = list[i];
+        for (int k = 0; k < maxbond; k++) {
           buf[m++] = ubuf(fbd[j][k]).d;
         }
       }
@@ -1043,17 +1129,17 @@ int FixBondDynamic::pack_forward_comm(int n, int *list, double *buf,
   }
 
   if (commflag == 2) {
-      for (i = 0; i < n; i++) {
-        j = list[i];
+      for (int i = 0; i < n; i++) {
+        int j = list[i];
         buf[m++] = ubuf(npos[j]).d;
       }
       return m;
   }
 
   if (commflag == 3) {
-      for (i = 0; i < n; i++) {
-        j = list[i];
-        for (k = 0; k < maxbond; k++) {
+      for (int i = 0; i < n; i++) {
+        int j = list[i];
+        for (int k = 0; k < maxbond; k++) {
           buf[m++] = ubuf(partners_possible[j][k]).d;
           buf[m++] = partners_probs[j][k];
         }
@@ -1062,10 +1148,25 @@ int FixBondDynamic::pack_forward_comm(int n, int *list, double *buf,
   }
 
   if (commflag == 4) {
-      for (i = 0; i < n; i++) {
-        j = list[i];
-        for (k = 0; k < maxbond; k++) {
+      for (int i = 0; i < n; i++) {
+        int j = list[i];
+        for (int k = 0; k < maxbond; k++) {
           buf[m++] = ubuf(partners_success[j][k]).d;
+        }
+      }
+      return m;
+  }
+
+  if (commflag == 5) {
+    int **nspecial = atom->nspecial;
+    tagint **special = atom->special;
+
+    for (int i = 0; i < n; i++) {
+        int j = list[i];
+        int ns = nspecial[j][0];
+        buf[m++] = ubuf(ns).d;
+        for (int k = 0; k < ns; k++) {
+            buf[m++] = ubuf(special[j][k]).d;
         }
       }
       return m;
@@ -1078,43 +1179,52 @@ int FixBondDynamic::pack_forward_comm(int n, int *list, double *buf,
 
 void FixBondDynamic::unpack_forward_comm(int n, int first, double *buf)
 {
-  int i,j,m,ns,last;
-
-  m = 0;
-  last = first + n;
+  int m = 0;
+  int last = first + n;
 
   if (commflag == 1) {
-    int tmp1, tmp2;
-    index = atom->find_custom(utils::strdup(std::string("fbd_") + id),tmp1,tmp2);
     tagint **fbd = atom->iarray[index];
 
-    for (i = first; i < last; i++) {
-        for (j = 0; j < maxbond; j++) {
+    for (int i = first; i < last; i++) {
+        for (int j = 0; j < maxbond; j++) {
           fbd[i][j] = (tagint) ubuf(buf[m++]).i;
         }
     }
 
   } else if (commflag == 2) {
-    for (i = first; i < last; i++) {
+    for (int i = first; i < last; i++) {
       npos[i] = (int) ubuf(buf[m++]).i;
     }
 
   } else if (commflag == 3) {
-    for (i = first; i < last; i++) {
-        for (j = 0; j < maxbond; j++) {
+    for (int i = first; i < last; i++) {
+        for (int j = 0; j < maxbond; j++) {
           partners_possible[i][j] = (tagint) ubuf(buf[m++]).i;
           partners_probs[i][j] = buf[m++];
         }
     }
 
   } else if (commflag == 4) {
-    for (i = first; i < last; i++) {
-        for (j = 0; j < maxbond; j++) {
+    for (int i = first; i < last; i++) {
+        for (int j = 0; j < maxbond; j++) {
           partners_success[i][j] = (int) ubuf(buf[m++]).i;
         }
     }
 
+  } else if (commflag == 5) {
+    int **nspecial = atom->nspecial;
+    tagint **special = atom->special;
+
+    for (int i = first; i < last; i++) {
+      int ns = (int) ubuf(buf[m++]).i;
+      nspecial[i][0] = ns;
+      for (int j = 0; j < ns; j++) {
+          special[i][j] = (tagint) ubuf(buf[m++]).i;
+      }
+    }
+
   }
+
 }
 
 /* ----------------------------------------------------------------------

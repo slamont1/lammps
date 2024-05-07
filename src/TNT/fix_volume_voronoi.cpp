@@ -27,6 +27,7 @@
 #include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
+#include "output.h"
 #include "region.h"
 #include "respa.h"
 #include "update.h"
@@ -432,11 +433,12 @@ void FixVolumeVoronoi::pre_force(int vflag)
   // 1. Apply force `on i from i'
   // 2. Apply force `on j from i'
   // 3. Apply force `on k from i'
+  int ifail = 0;
   for (int i = 0; i < nlocal; i++) {
 
     // Declare variables inside loop for scope clarity
     double fx,fy;
-    int j,jtmp,num_faces,jleft,jright;
+    int j,jtmp,jleft,jright;
     double x1,x2,y1,y2;
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
@@ -466,6 +468,7 @@ void FixVolumeVoronoi::pre_force(int vflag)
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
     // Find num_faces for this atom
+    int num_faces = max_faces;
     for (int n = 0; n < max_faces; n++) {
         if (dtf[i][n] == 0) {
             num_faces = n;
@@ -475,8 +478,8 @@ void FixVolumeVoronoi::pre_force(int vflag)
 
     // Current cell volume
     double voro_volume = calc_area(dtf[i],i,num_faces);
-    if (voro_volume <= 0.0) {
-      error->one(FLERR,"Fix volume/voronoi calculated negative or zero volume");
+    if (peratom_flag) {
+      array_atom[i][max_faces] = voro_volume;
     }
 
     // Reference cell volume
@@ -502,9 +505,9 @@ void FixVolumeVoronoi::pre_force(int vflag)
         error->warning(FLERR, "Cell volume too small", update->ntimestep);
 
         // if less than half, error out
-        if (voro_volume < 0.5*volume_crit) {
-          error->one(FLERR,"Critical cell volume exceeded");
-        }
+        // if (voro_volume < 0.5*volume_crit) {
+        //   error->one(FLERR,"Critical cell volume exceeded");
+        // }
 
         // Correct to 1.01*volume_crit
         voro_volume = 1.01*volume_crit;
@@ -531,7 +534,6 @@ void FixVolumeVoronoi::pre_force(int vflag)
 
     // Store current cell area and pressure
     if (peratom_flag) {
-      array_atom[i][max_faces] = voro_volume;
       array_atom[i][max_faces+1] = pressure;
     }
 
@@ -814,6 +816,13 @@ void FixVolumeVoronoi::pre_force(int vflag)
     }
   }
 
+  // int ifail_all = 0;
+  // MPI_Allreduce(&ifail, &ifail_all, 1, MPI_INT, MPI_MAX, world);
+  // if (ifail_all == 1 && me == 0) {
+  //   // output->write_dump(update->ntimestep);
+  //   // error->one(FLERR,"Fix volume/voronoi calculated negative or zero volume");
+  // }
+
   // Reverse communication of force and virial contributions
   comm->reverse_comm(this,8);
  
@@ -868,7 +877,7 @@ int FixVolumeVoronoi::check_edges(tagint *edge_tags)
   for (int i = 0; i < nlocal; i++) {
 
     // Determine the number of faces for this atom
-    int num_faces;
+    int num_faces = max_faces;
     for (int n = 0; n < max_faces; n++) {
         if (dtf[i][n] == 0) {
             num_faces = n;
@@ -1109,7 +1118,7 @@ void FixVolumeVoronoi::arrange_cyclic(tagint *tag_vec, int icell)
   double **x = atom->x;
 
   // Determine the number of faces for this atom
-  int num_faces;
+  int num_faces = max_faces;
   for (int n = 0; n < max_faces; n++) {
       if (tag_vec[n] == 0) {
           num_faces = n;
@@ -1299,6 +1308,30 @@ double FixVolumeVoronoi::calc_area(tagint *tag_vec, int icell, int num_faces){
     // Sum the area contribution
     Area += 0.5*(vert[mu1][0]*vert[mu2][1] - vert[mu1][1]*vert[mu2][0]);
 
+  }
+
+  if (Area <= 0.0) {
+    // Print info on icell
+    printf("\nproc %d: atom %d at loc: (%f,%f)\n",me,atom->tag[icell],x[icell][0],x[icell][1]);
+
+    // Print connected tags
+    printf("Voro tags: ");
+    for (int n = 0; n < max_faces; n++) {
+      printf("%d ",tag_vec[n]);
+    }
+
+    // Print voronoi neighbors
+    printf("\nVoro coords: ");
+    for (int n = 0; n < num_faces; n++) {
+      int j = domain->closest_image(icell,atom->map(tag_vec[n]));
+      printf("(%f,%f) ",x[j][0],x[j][1]);
+    }
+
+    printf("\nVertex coords: ");
+    for (int n = 0; n < num_faces; n++) {
+      printf("(%f,%f) ",vert[n][0],vert[n][1]);
+    }
+    printf("\n");
   }
 
   return Area;

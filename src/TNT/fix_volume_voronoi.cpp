@@ -190,6 +190,8 @@ int FixVolumeVoronoi::setmask()
   int mask = 0;
   mask |= PRE_FORCE;
   mask |= POST_FORCE;
+  mask |= MIN_PRE_FORCE;
+  mask |= MIN_POST_FORCE;
   return mask;
 }
 
@@ -235,9 +237,9 @@ void FixVolumeVoronoi::init()
   }
 
   // Thickness in z-dimension must be 1 for volume calculation to be valid
-  if (domain->zprd != 1.0) {
-    error->all(FLERR,"Fix volume/voronoi requires z-thickness to be 1.0");
-  }
+  // if (domain->zprd != 1.0) {
+  //   error->all(FLERR,"Fix volume/voronoi requires z-thickness to be 1.0");
+  // }
 
 }
 
@@ -330,6 +332,28 @@ void FixVolumeVoronoi::setup(int vflag)
   pre_force(vflag);
   post_force(vflag);
 
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixVolumeVoronoi::min_setup(int vflag)
+{
+  pre_force(vflag);
+  post_force(vflag);
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixVolumeVoronoi::min_pre_force(int vflag)
+{
+  pre_force(vflag);
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixVolumeVoronoi::min_post_force(int vflag)
+{
+  post_force(vflag);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -485,7 +509,7 @@ void FixVolumeVoronoi::pre_force(int vflag)
     // Reference cell volume
     double voro_volume0;
     if (flag_store_init) {
-        voro_volume0 = fstore->vector_atom[i];
+        voro_volume0 = fstore->vector_atom[i]/(domain->zprd);
     } else {
         voro_volume0 = VolPref;
     }
@@ -526,10 +550,13 @@ void FixVolumeVoronoi::pre_force(int vflag)
       evoro += etmp;
     } else {
       // Calculate pressure
-      pressure = Elasticity*(voro_volume-voro_volume0);
+      // pressure = Elasticity*(voro_volume-voro_volume0);
+      pressure = Elasticity*(1.0/voro_volume0-1.0/voro_volume);
 
       // Tally energy
-      evoro += 0.5*Elasticity*(voro_volume-voro_volume0)*(voro_volume-voro_volume0);
+      // evoro += 0.5*Elasticity*(voro_volume-voro_volume0)*(voro_volume-voro_volume0);
+      double Jdet = voro_volume/voro_volume0;
+      evoro += Elasticity*(Jdet - 1.0 - log(Jdet));
     }
 
     // Store current cell area and pressure

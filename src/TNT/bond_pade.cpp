@@ -42,11 +42,7 @@ BondPADE::~BondPADE()
 
 void BondPADE::compute(int eflag, int vflag)
 {
-  int i1, i2, n, type;
-  double delx, dely, delz, rsq, ebond, fbond;
-  double Nb, lam, numer, denom, term1, term2;
-
-  ebond = 0.0;
+  double ebond = 0.0;
   ev_init(eflag, vflag);
 
   double **x = atom->x;
@@ -56,21 +52,22 @@ void BondPADE::compute(int eflag, int vflag)
   int nlocal = atom->nlocal;
   int newton_bond = force->newton_bond;
 
-  for (n = 0; n < nbondlist; n++) {
-    i1 = bondlist[n][0];
-    i2 = bondlist[n][1];
-    type = bondlist[n][2];
+  for (int n = 0; n < nbondlist; n++) {
+    int i1 = bondlist[n][0];
+    int i2 = bondlist[n][1];
+    int type = bondlist[n][2];
 
-    delx = x[i1][0] - x[i2][0];
-    dely = x[i1][1] - x[i2][1];
-    delz = x[i1][2] - x[i2][2];
+    double delx = x[i1][0] - x[i2][0];
+    double dely = x[i1][1] - x[i2][1];
+    double delz = x[i1][2] - x[i2][2];
 
-    rsq = delx * delx + dely * dely + delz * delz;
+    double rsq = delx * delx + dely * dely + delz * delz;
+    double r = sqrt(rsq);
 
     // Determine stretch ratio
 
-    Nb = N[type] * b[type];
-    lam = sqrt(rsq)/Nb;
+    double Nb = N[type] * b[type];
+    double lam = r/Nb;
 
     // if lam -> 1, then chain is approaching contour length
         // issue a warning
@@ -84,15 +81,20 @@ void BondPADE::compute(int eflag, int vflag)
 
     // Calculate force magnitude
 
-    numer = lam*(3.0 - pow(lam,2.0));
-    denom = 1.0 - pow(lam,2.0);
-    fbond = -numer/denom/b[type];
+    double numer = lam*(3.0 - lam*lam);
+    double denom = 1.0 - lam*lam;
+    double fbond = 0.0;
+
+    if (r > 0.0)
+      fbond = -numer/denom/b[type]/r;
+    else
+      fbond = 0.0;
 
     // Energy
 
     if (eflag) {
-        term1 = pow(lam,2.0)/2.0;
-        term2 = log(1.0 - pow(lam,2.0));
+        double term1 = lam*lam/2.0;
+        double term2 = log(1.0 - lam*lam);
         ebond = N[type]*(term1 - term2);
     }
 
@@ -202,8 +204,9 @@ void BondPADE::write_data(FILE *fp)
 
 double BondPADE::single(int type, double rsq, int /*i*/, int /*j*/, double &fforce)
 {
+  double r = sqrt(rsq);
   double Nb = N[type] * b[type];
-  double lam = sqrt(rsq)/Nb;
+  double lam = r/Nb;
 
   // if lam -> 1, then chain is approaching contour length
     // issue a warning
@@ -215,15 +218,54 @@ double BondPADE::single(int type, double rsq, int /*i*/, int /*j*/, double &ffor
     lam = 0.99;
   }
 
-  double numer = lam*(3.0 - pow(lam,2.0));
-  double denom = 1.0 - pow(lam,2.0);
-  fforce = -numer/denom/b[type];
+  double numer = lam*(3.0 - lam*lam);
+  double denom = 1.0 - lam*lam;
 
-  double term1 = pow(lam,2.0)/2.0;
-  double term2 = log(1.0 - pow(lam,2.0));
+  if (r > 0.0)
+    fforce = -numer/denom/b[type]/r;
+  else
+    fforce = 0.0;
+
+  double term1 = lam*lam/2.0;
+  double term2 = log(1.0 - lam*lam);
   double eng = N[type]*(term1 - term2);
 
   return eng;
+}
+
+/* ---------------------------------------------------------------------- */
+
+void BondPADE::born_matrix(int type, double rsq, int /*i*/, int /*j*/, double &du, double &du2)
+{
+  double r = sqrt(rsq);
+  double Nb = N[type] * b[type];
+  double lam = r/Nb;
+
+  du2 = 0.0;
+  du = 0.0;
+
+  // if lam -> 1, then chain is approaching contour length
+    // issue a warning
+  // if lam > 2 something serious is wrong, abort
+
+  if (lam > 0.99) {
+    error->warning(FLERR, "PADE bond too long: {} {:.8}", update->ntimestep, lam);
+    if (lam > 2.0) error->one(FLERR, "Bad PADE bond");
+    lam = 0.99;
+  }
+
+  double numer = lam*(3.0 - lam*lam);
+  double denom = 1.0 - lam*lam;
+
+  if (r > 0.0) {
+    du = -numer/denom/b[type];
+    
+    double bb = b[type];
+    double NN = N[type];
+    double numer2 = 3.0*bb*bb*bb*bb*NN*NN*NN*NN+rsq*rsq;
+    double denom2 = bb*bb*bb*NN*NN-bb*rsq;
+    du2 = numer2/denom2/denom2/NN;
+  }
 }
 
 /* ---------------------------------------------------------------------- */

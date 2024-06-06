@@ -33,8 +33,11 @@ class FixVolumeVoronoi : public Fix {
   void post_constructor();
   void init() override;
   void setup(int) override;
+  void min_setup(int) override;
   void pre_force(int) override;
   void post_force(int) override;
+  void min_pre_force(int) override;
+  void min_post_force(int) override;
 
   int pack_forward_comm(int, int *, double *, int, int *) override;
   void unpack_forward_comm(int, int, double *) override;

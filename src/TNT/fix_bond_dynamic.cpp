@@ -745,6 +745,9 @@ void FixBondDynamic::post_integrate()
   commflag = 4;
   comm->forward_comm(this,maxbond);
 
+  // Process all breaking and creation events
+  int nbreak = 0;
+  int ncreate = 0;
   for (int i = 0; i < nlocal; i++) {
     for (int b = 0; b < maxbond; b++) {
 
@@ -773,6 +776,13 @@ void FixBondDynamic::post_integrate()
         // Update atom properties and fbd
         process_broken(i,j);
         fbd[i][b] = 0;
+
+        // Sum break only once
+        if (j < nlocal && i < j) {
+          nbreak += 1;
+        } else if (atom->tag[i] < tagj) {
+          nbreak += 1;
+        }
 
         // Only do this once if both local
         if (j < nlocal && i < j) {
@@ -828,6 +838,13 @@ void FixBondDynamic::post_integrate()
         }
       }
 
+      // Sum creation only once
+      if (j < nlocal && i < j) {
+        ncreate += 1;
+      } else if (atom->tag[i] < tagj) {
+        ncreate += 1;
+      }
+
       // Update atom j if owned
       if (j < nlocal) {
         for (int bb = 0; bb < maxbond; bb++) {
@@ -840,6 +857,19 @@ void FixBondDynamic::post_integrate()
 
     }
   }
+
+  // Tally creations
+  int ncreate_all;
+  int nbreak_all;
+  MPI_Allreduce(&ncreate,&ncreate_all,1,MPI_INT,MPI_SUM,world);
+  MPI_Allreduce(&nbreak,&nbreak_all,1,MPI_INT,MPI_SUM,world);
+
+  // No need for communication if no breaks or creations
+  if (ncreate_all == 0 && nbreak_all == 0) return;
+
+  // Sum totals into global nbonds
+  atom->nbonds += ncreate_all;
+  atom->nbonds -= nbreak_all;
 
   // forward communication of fbd
   commflag = 1;

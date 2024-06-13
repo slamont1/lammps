@@ -141,7 +141,7 @@ void FixBondRupture::post_integrate()
   comm->forward_comm();
 
   // loop through neighbor bond list
-  int break_count = 0;
+  int nbreak = 0;
   for (int n = 0; n < nbondlist; n++) {
 
     // skip bond if already broken
@@ -174,22 +174,40 @@ void FixBondRupture::post_integrate()
     // Break bonds past the critical length
     if (rsq >= rcritsq) {
 
-        // Tally break_count to trigger reneighboring
-        break_count = 1;
-
         // Process broken bond
         bondlist[n][2] = 0;
         process_broken(i1,i2);
+
+        int i,j;
+        if (i1 < i2) {
+          i = i1;
+          j = i2;
+        } else {
+          i = i2;
+          j = i1;
+        }
+
+        // Sum break only once
+        if (j < nlocal && i < j) {
+          nbreak += 1;
+        } else if (atom->tag[i] < atom->tag[j]) {
+          nbreak += 1;
+        }
     }
   }
 
-  int break_all = 0;
-  MPI_Allreduce(&break_count, &break_all, 1, MPI_INT, MPI_MAX, world);
+  // Tally creations
+  int nbreak_all;
+  MPI_Allreduce(&nbreak,&nbreak_all,1,MPI_INT,MPI_SUM,world);
 
   // trigger reneighboring
-  if (break_all == 1) next_reneighbor = update->ntimestep;
-  if (break_all == 0) return;
+  if (nbreak_all > 0) next_reneighbor = update->ntimestep;
+  if (nbreak_all == 0) return;
 
+  // Sum global counts
+  atom->nbonds -= nbreak_all;
+
+  // Update 1-2 neighbors 
   update_special();
 
   // communicate final partner and 1-2 special neighbors

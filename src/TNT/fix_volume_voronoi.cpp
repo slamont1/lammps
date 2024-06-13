@@ -522,6 +522,7 @@ void FixVolumeVoronoi::pre_force(int vflag)
 
       // Number of particles
       double np = cdens0*voro_volume0;
+      np = atom->num_bond[i]*30/2;
 
       // Error if critical volume exceeded
       if (voro_volume < volume_crit) {
@@ -549,13 +550,15 @@ void FixVolumeVoronoi::pre_force(int vflag)
       etmp *= -np;
       evoro += etmp;
     } else {
+      // Area change
+      double Jdet = voro_volume/voro_volume0;
+
       // Calculate pressure
       // pressure = Elasticity*(voro_volume-voro_volume0);
       pressure = Elasticity*(1.0/voro_volume0-1.0/voro_volume);
 
       // Tally energy
       // evoro += 0.5*Elasticity*(voro_volume-voro_volume0)*(voro_volume-voro_volume0);
-      double Jdet = voro_volume/voro_volume0;
       evoro += Elasticity*(Jdet - 1.0 - log(Jdet));
     }
 

@@ -73,7 +73,7 @@ class FixVolumeVoronoi : public Fix {
 
   // For fluid bulk resistance
   int flag_fluid;
-  double eps_a, cdens0, f0;
+  double eps_a, Nkuhn;
 
   // Total virial on each cell
   double **total_virial;
@@ -105,6 +105,9 @@ class FixVolumeVoronoi : public Fix {
 
   // For calculating cell volumes
   double calc_area(int *, int, int);
+
+  // For calculating maximum area
+  double calc_amax(double, double);
 
 };
 

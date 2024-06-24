@@ -39,6 +39,7 @@
 #include <iostream>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -55,12 +56,14 @@ using namespace std;
 using namespace std::chrono;
 using namespace voro;
 
+typedef complex<double> Complex;
+
 enum { NONE, CONSTANT, EQUAL, ATOM };
 
 /* ---------------------------------------------------------------------- */
 
 FixVolumeVoronoi::FixVolumeVoronoi(LAMMPS *lmp, int narg, char **arg) :
-    Fix(lmp, narg, arg), id_compute_voronoi(nullptr), total_virial(nullptr)
+    Fix(lmp, narg, arg), id_compute_voronoi(nullptr), total_virial(nullptr), fnet(nullptr)
 {
   if (narg < 6) error->all(FLERR, "Illegal fix volume/voronoi command: not sufficient args");
 
@@ -101,8 +104,6 @@ FixVolumeVoronoi::FixVolumeVoronoi(LAMMPS *lmp, int narg, char **arg) :
 
   // default values for fluid system
   eps_a  = 0;
-  cdens0 = 0;
-  f0     = 0;
 
   int iarg = 7;
   while (iarg < narg) {
@@ -116,14 +117,13 @@ FixVolumeVoronoi::FixVolumeVoronoi(LAMMPS *lmp, int narg, char **arg) :
 
       iarg += 2;
     } else if (strcmp(arg[iarg],"fluid") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix volume/voronoi command");
+      if (iarg+3 > narg) error->all(FLERR,"Illegal fix volume/voronoi command");
       flag_fluid = 1;
 
       eps_a  = utils::numeric(FLERR,arg[iarg+1],false,lmp);
-      cdens0 = utils::numeric(FLERR,arg[iarg+2],false,lmp);
-      f0     = utils::numeric(FLERR,arg[iarg+3],false,lmp);
+      Nkuhn  = utils::numeric(FLERR,arg[iarg+2],false,lmp);
 
-      iarg += 4;
+      iarg += 3;
     } else error->all(FLERR,"Illegal fix volume/voronoi command");
   }
 
@@ -148,7 +148,7 @@ FixVolumeVoronoi::FixVolumeVoronoi(LAMMPS *lmp, int narg, char **arg) :
 
   // Specify attributes for dumping connectivity (dtf)
   peratom_flag = 1;
-  size_peratom_cols = max_faces+2;
+  size_peratom_cols = max_faces+3;
   peratom_freq = 1;
 
   // perform initial allocation of atom-based arrays
@@ -447,6 +447,7 @@ void FixVolumeVoronoi::pre_force(int vflag)
       }
       array_atom[i][max_faces] = 0.0;
       array_atom[i][max_faces+1] = 0.0;
+      array_atom[i][max_faces+2] = 0.0;
     }
   }
 
@@ -516,37 +517,40 @@ void FixVolumeVoronoi::pre_force(int vflag)
 
     // Pressure due to volume change (dPsi/dVolume)
     double pressure = 0.0;
+    int flag_amax = 0;
     if (flag_fluid) {
-      // Critical cell volume
-      double volume_crit = f0*voro_volume0;
 
       // Number of particles
-      double np = cdens0*voro_volume0;
-      np = atom->num_bond[i]*30/2;
+      double np = atom->num_bond[i]*Nkuhn/2;
+
+      // Volume of particles
+      double nu = (voro_volume0*pow(eps_a,0.5) + voro_volume0*pow(eps_a - 4.0,0.5))/(2.0*pow(eps_a,0.5)*np);
+
+      // Critical cell volume
+      double volume_crit = np*nu;
 
       // Error if critical volume exceeded
       if (voro_volume < volume_crit) {
         // Issue a warning
         error->warning(FLERR, "Cell volume too small", update->ntimestep);
 
-        // if less than half, error out
-        // if (voro_volume < 0.5*volume_crit) {
-        //   error->one(FLERR,"Critical cell volume exceeded");
-        // }
-
         // Correct to 1.01*volume_crit
         voro_volume = 1.01*volume_crit;
       }
 
+      // Calculate maximum area
+      double amax = calc_amax(np, nu);
+      if (voro_volume >= amax) flag_amax = 1;
+
       // Calculate pressure
-      pressure  = 1.0/(voro_volume - f0*voro_volume0);
-      pressure -= eps_a*f0*voro_volume0/voro_volume/voro_volume;
+      pressure  = 1.0/(voro_volume - np*nu);
+      pressure -= eps_a*np*nu/voro_volume/voro_volume;
       pressure *= -np;
 
       // Tally energy
       double etmp = 0.0;
-      etmp += log(voro_volume - f0*voro_volume0);
-      etmp += eps_a*f0*voro_volume0/voro_volume;
+      etmp += log(voro_volume - np*nu);
+      etmp += eps_a*np*nu/voro_volume;
       etmp *= -np;
       evoro += etmp;
     } else {
@@ -565,6 +569,7 @@ void FixVolumeVoronoi::pre_force(int vflag)
     // Store current cell area and pressure
     if (peratom_flag) {
       array_atom[i][max_faces+1] = pressure;
+      array_atom[i][max_faces+2] = flag_amax;
     }
 
     // Coords of atom i
@@ -1213,6 +1218,25 @@ void FixVolumeVoronoi::calc_cc(double *xn, double *yn,  double *CC)
 
   CC[0] = (x0*sin(2*A)+x1*sin(2*B)+x2*sin(2*C))/(sin(2*A)+sin(2*B)+sin(2*C)); // x coord of circumcenter
   CC[1] = (y0*sin(2*A)+y1*sin(2*B)+y2*sin(2*C))/(sin(2*A)+sin(2*B)+sin(2*C)); // y coord of circumcenter
+}
+
+/*------------------------------------------------------------------------*/
+
+double FixVolumeVoronoi::calc_amax(double np, double nu)
+{
+  Complex a(np*nu,0);
+  Complex b(eps_a,0);
+
+  Complex i(0, 1);  // imaginary unit
+  Complex part1 = pow((3.0 * sqrt(3.0) * sqrt(27.0 * pow(a, 6) * pow(b, 2) - 8.0 * pow(a, 6) * pow(b, 3)) + 8.0 * pow(a, 3) * pow(b, 3) - 36.0 * pow(a, 3) * pow(b, 2) + 27.0 * pow(a, 3) * b), 1.0 / 3.0);
+  
+  Complex term1 = -(1.0 / 6.0) * (1.0 + i * sqrt(3.0)) * part1;
+  Complex term2 = ((1.0 - i * sqrt(3.0)) * (12.0 * pow(a, 2) * b - 4.0 * pow(a, 2) * pow(b, 2))) / (6.0 * part1);
+  Complex term3 = (2.0 * a * b) / 3.0;
+
+  Complex x = term1 + term2 + term3;
+
+  return real(x);
 }
 
 /*------------------------------------------------------------------------*/

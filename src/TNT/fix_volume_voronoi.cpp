@@ -520,39 +520,43 @@ void FixVolumeVoronoi::pre_force(int vflag)
     int flag_amax = 0;
     if (flag_fluid) {
 
-      // Number of particles
-      double np = atom->num_bond[i]*Nkuhn/2;
+      if (atom->num_bond[i] < 1) {
+        pressure = 0.0;
+      } else {
+        // Number of particles
+        double np = atom->num_bond[i]*Nkuhn/2;
 
-      // Volume of particles
-      double nu = (voro_volume0*pow(eps_a,0.5) + voro_volume0*pow(eps_a - 4.0,0.5))/(2.0*pow(eps_a,0.5)*np);
+        // Volume of particles
+        double nu = (voro_volume0*pow(eps_a,0.5) + voro_volume0*pow(eps_a - 4.0,0.5))/(2.0*pow(eps_a,0.5)*np);
 
-      // Critical cell volume
-      double volume_crit = np*nu;
+        // Critical cell volume
+        double volume_crit = np*nu;
 
-      // Error if critical volume exceeded
-      if (voro_volume < volume_crit) {
-        // Issue a warning
-        error->warning(FLERR, "Cell volume too small", update->ntimestep);
+        // Error if critical volume exceeded
+        if (voro_volume < volume_crit) {
+          // Issue a warning
+          error->warning(FLERR, "Cell volume too small", update->ntimestep);
 
-        // Correct to 1.01*volume_crit
-        voro_volume = 1.01*volume_crit;
+          // Correct to 1.01*volume_crit
+          voro_volume = 1.01*volume_crit;
+        }
+
+        // Calculate maximum area
+        double amax = calc_amax(np, nu);
+        if (voro_volume >= amax) flag_amax = 1;
+
+        // Calculate pressure
+        pressure  = 1.0/(voro_volume - np*nu);
+        pressure -= eps_a*np*nu/voro_volume/voro_volume;
+        pressure *= -np;
+
+        // Tally energy
+        double etmp = 0.0;
+        etmp += log(voro_volume - np*nu);
+        etmp += eps_a*np*nu/voro_volume;
+        etmp *= -np;
+        evoro += etmp;
       }
-
-      // Calculate maximum area
-      double amax = calc_amax(np, nu);
-      if (voro_volume >= amax) flag_amax = 1;
-
-      // Calculate pressure
-      pressure  = 1.0/(voro_volume - np*nu);
-      pressure -= eps_a*np*nu/voro_volume/voro_volume;
-      pressure *= -np;
-
-      // Tally energy
-      double etmp = 0.0;
-      etmp += log(voro_volume - np*nu);
-      etmp += eps_a*np*nu/voro_volume;
-      etmp *= -np;
-      evoro += etmp;
     } else {
       // Area change
       double Jdet = voro_volume/voro_volume0;
@@ -1218,6 +1222,10 @@ void FixVolumeVoronoi::calc_cc(double *xn, double *yn,  double *CC)
 
   CC[0] = (x0*sin(2*A)+x1*sin(2*B)+x2*sin(2*C))/(sin(2*A)+sin(2*B)+sin(2*C)); // x coord of circumcenter
   CC[1] = (y0*sin(2*A)+y1*sin(2*B)+y2*sin(2*C))/(sin(2*A)+sin(2*B)+sin(2*C)); // y coord of circumcenter
+
+  if (isfinite(CC[0]) == false || isfinite(CC[1]) == false) {
+    error->one(FLERR,"Non-finite CC");
+  }
 }
 
 /*------------------------------------------------------------------------*/
@@ -1307,6 +1315,16 @@ void FixVolumeVoronoi::calc_jacobian(int *DT, int p, double *Jac){
 
   Jac[3] = ri[1]*d1[0]+rj[1]*d2[0]+rk[1]*d3[0];
   Jac[1] = ri[1]*d1[1]+lam1/clam+rj[1]*d2[1]+rk[1]*d3[1];
+
+  for (int i = 0; i < 4; i++) {
+    if (isfinite(Jac[i]) == false) {
+      Jac[0] = 0.0;
+      Jac[1] = 0.0;
+      Jac[2] = 0.0;
+      Jac[3] = 0.0;
+      printf("\n Warning: Non-finite Jacobian \n");
+    }
+  }
 
 }
 

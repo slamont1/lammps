@@ -454,43 +454,18 @@ void FixVolumeVoronoi::pre_force(int vflag)
   // Define pointer to fix_store
   if (flag_store_init) fstore = modify->get_fix_by_id(id_fix_store);
 
+  // Define maximum size array for vertices
+  double vert_coords[max_faces][2];
+  for (int n = 0; n < max_faces; n++) {
+    vert_coords[n][0] = 0.0;
+    vert_coords[n][1] = 0.0;
+  }
+
   // Loop through local atoms:
   // 1. Apply force `on i from i'
   // 2. Apply force `on j from i'
   // 3. Apply force `on k from i'
-  int ifail = 0;
   for (int i = 0; i < nlocal; i++) {
-
-    // Declare variables inside loop for scope clarity
-    double fx,fy;
-    int j,jtmp,jleft,jright;
-    double x1,x2,y1,y2;
-
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-    // ~~~~~~~~~~~~~~~~~~~~~ Refresh vector arrays ~~~~~~~~~~~~~~~~~~~~~~ //
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-
-    // Local ids of atoms in current triangulation
-    int DT[3] = {0,0,0};
-
-    // Coordinates of current, previous, and next vertex
-    double vert[2] = {0.0,0.0}, vert_prev[2] = {0.0,0.0}, vert_next[2] = {0.0,0.0};
-
-    // x and y coordinates of current triangulation
-    double xn[3] = {0.0,0.0,0.0}, yn[3] = {0.0,0.0,0.0};
-
-    // Vector spanning between n+1 and n-1 vertices
-    double rnu_diff[2] = {0.0,0.0};
-
-    // Vector spanning between the vertex and the atom
-    double rvec[2] = {0.0,0.0};
-
-    // Jacobian matrix (Voigt notation): J11, J22, J12, J21
-    double Jac[4] = {0.0,0.0,0.0,0.0};
-
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-    // ~~~~~~~~~~~~~~~~~~~~~~~ Begin calculations ~~~~~~~~~~~~~~~~~~~~~~~ //
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
     // Find num_faces for this atom
     int num_faces = max_faces;
@@ -501,10 +476,41 @@ void FixVolumeVoronoi::pre_force(int vflag)
         }
     }
 
+    // Find all vertices
+    for (int n = 0; n < num_faces; n++) {
+
+      // Indices of current triangulation
+      int nu1 = n;
+      int nu2 = n+1;
+
+      // Wrap back to first vertex for final term
+      if (nu2 == num_faces) nu2 = 0;
+
+      // local id of nu1 and nu2
+      int j_nu1 = domain->closest_image(i,atom->map(dtf[i][nu1]));
+      int j_nu2 = domain->closest_image(i,atom->map(dtf[i][nu2]));
+
+      // Coordinates of current triangulation
+      double xn[3] = {x[i][0],x[j_nu1][0],x[j_nu2][0]};
+      double yn[3] = {x[i][1],x[j_nu1][1],x[j_nu2][1]};
+
+      // Store circumcenter
+      calc_cc(xn, yn, vert_coords[n]);
+    }
+
     // Current cell volume
-    double voro_volume = calc_area(dtf[i],i,num_faces);
-    if (peratom_flag) {
-      array_atom[i][max_faces] = voro_volume;
+    double voro_volume = 0.0;
+    for (int n = 0; n < num_faces; n++) {
+
+      // Indices of current and next vertex
+      int mu1 = n;
+      int mu2 = n+1;
+
+      // Wrap back to first vertex for final term
+      if (mu2 == num_faces) mu2 = 0;
+
+      // Sum the area contribution
+      voro_volume += 0.5*(vert_coords[mu1][0]*vert_coords[mu2][1] - vert_coords[mu1][1]*vert_coords[mu2][0]);
     }
 
     // Reference cell volume
@@ -572,295 +578,120 @@ void FixVolumeVoronoi::pre_force(int vflag)
 
     // Store current cell area and pressure
     if (peratom_flag) {
+      array_atom[i][max_faces] = voro_volume;
       array_atom[i][max_faces+1] = pressure;
       array_atom[i][max_faces+2] = flag_amax;
     }
 
-    // Coords of atom i
-    double x0 = x[i][0];
-    double y0 = x[i][1];
+    // Force contributions
+    for (int n = 0; n < num_faces; n++) {
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-    // ~~~~~~~~~~~~~~~~~~~~~~ Calculate vertices ~~~~~~~~~~~~~~~~~~~~~~~~ //
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+      // Indices of current triangulation
+      int nu1 = n;
+      int nu2 = n+1;
 
-    // First entry of DT is always i
-    DT[0] = i;
+      // Wrap back to first vertex for final term
+      if (nu2 == num_faces) nu2 = 0;
 
-    // Local id and coords of last face
-    jtmp = atom->map(dtf[i][num_faces-1]);
-    if (jtmp < 0) {
-      error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-    }
-    j = domain->closest_image(i,jtmp);
-    x1 = x[j][0];
-    y1 = x[j][1];
+      // local id of nu1 and nu2
+      int j_nu1 = domain->closest_image(i,atom->map(dtf[i][nu1]));
+      int j_nu2 = domain->closest_image(i,atom->map(dtf[i][nu2]));
 
-    // Local id and coords of first face
-    jtmp = atom->map(dtf[i][0]);
-    if (jtmp < 0) {
-      error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-    }
-    j = domain->closest_image(i,jtmp);
-    DT[1] = j;
-    x2 = x[j][0];
-    y2 = x[j][1];
+      // Current triangulation
+      int DT[3] = {i,j_nu1,j_nu2};
 
-    // Circumcenter of previous vertex
-    xn[0] = x0; xn[1] = x1; xn[2] = x2;
-    yn[0] = y0; yn[1] = y1; yn[2] = y2;
-    calc_cc(xn, yn, vert_prev);
-    x1 = x2;
-    y1 = y2;
+      // Indices of previous and next vertices
+      int mu1 = n-1;
+      int mu3 = n+1;
 
-    // Local id and coords of second face
-    jtmp = atom->map(dtf[i][1]);
-    if (jtmp < 0) {
-      error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-    }
-    j = domain->closest_image(i,jtmp);
-    DT[2] = j;
-    x2 = x[j][0];
-    y2 = x[j][1];
+      // Wrap to final vertex for first term
+      if (n == 0) mu1 = num_faces-1;
 
-    // Circumcenter of current vertex
-    xn[0] = x0; xn[1] = x1; xn[2] = x2;
-    yn[0] = y0; yn[1] = y1; yn[2] = y2;
-    calc_cc(xn, yn, vert);
-    x1 = x2;
-    y1 = y2;
+      // Wrap to first vetex for final term
+      if (mu3 == num_faces) mu3 = 0;
 
-    // Local id and coords of third face
-    jtmp = atom->map(dtf[i][2]);
-    if (jtmp < 0) {
-      error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-    }
-    j = domain->closest_image(i,jtmp);
-    x2 = x[j][0];
-    y2 = x[j][1];
+      // Coordinates of previous and next vertices
+      double vert_prev[2] = {vert_coords[mu1][0],vert_coords[mu1][1]};
+      double vert_next[2] = {vert_coords[mu3][0],vert_coords[mu3][1]};
 
-    // Circumcenter of next vertex
-    xn[0] = x0; xn[1] = x1; xn[2] = x2;
-    yn[0] = y0; yn[1] = y1; yn[2] = y2;
-    calc_cc(xn, yn, vert_next);
-    x1 = x2;
-    y1 = y2;
+      // Declare jacobian matrix (Voigt notation): J11, J22, J12, J21
+      double Jac[4] = {0.0,0.0,0.0,0.0};
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~ Force calculation on cell i ~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+      // Declare rvec to point between vertices
+      double rvec[2] = {0.0,0.0};
 
-    // rnu_diff is inverted due to cross product with outward normal
-    rnu_diff[0] = vert_next[1] - vert_prev[1];
-    rnu_diff[1] = -(vert_next[0] - vert_prev[0]);
+      // Declare fx and fy for storing force components
+      double fx = 0.0;
+      double fy = 0.0;
 
-    // Calculate jacobian on atom i (cell owner)
-    calc_jacobian(DT,i,Jac);
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+      // ~~~~~~~~~~~~~~~~ Force calculation on cell i ~~~~~~~~~~~~~~~~~~~~~//
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
-    // Forces on i from current vertex
-    fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-    fnet[i][0] += fx;
-    fnet[i][1] += fy;
+      // rnu_diff is inverted due to cross product with outward normal
+      double rnu_diff[2] = {0.0,0.0};
+      rnu_diff[0] = vert_next[1] - vert_prev[1];
+      rnu_diff[1] = -(vert_next[0] - vert_prev[0]);
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~ Force calculation on jleft ~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+      // Calculate jacobian on atom i (cell owner)
+      calc_jacobian(DT,i,Jac);
 
-    jleft = DT[1];
+      // Forces on i from current vertex
+      fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+      fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+      fnet[i][0] += fx;
+      fnet[i][1] += fy;
 
-    // Calculate jacobian on atom jleft
-    calc_jacobian(DT,jleft,Jac);
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+      // ~~~~~~~~~~~~~~~~ Force calculation on jleft ~~~~~~~~~~~~~~~~~~~~~~//
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
-    // Forces on i from current vertex
-    fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-    fnet[jleft][0] += fx;
-    fnet[jleft][1] += fy;
+      int jleft = DT[1];
 
-    // Vector for virial (from i to j)
-    rvec[0] = x[i][0] - x[jleft][0];
-    rvec[1] = x[i][1] - x[jleft][1];
+      // Calculate jacobian on atom jleft
+      calc_jacobian(DT,jleft,Jac);
 
-    // Virial contributions
-    total_virial[jleft][0] -= fx*rvec[0];
-    total_virial[jleft][1] -= fy*rvec[1];
-    total_virial[jleft][3] -= fx*rvec[1];
+      // Forces on i from current vertex
+      fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+      fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+      fnet[jleft][0] += fx;
+      fnet[jleft][1] += fy;
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~ Force calculation on jright ~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+      // Vector for virial (from i to j)
+      rvec[0] = x[i][0] - x[jleft][0];
+      rvec[1] = x[i][1] - x[jleft][1];
 
-    jright = DT[2];
+      // Virial contributions
+      total_virial[jleft][0] -= fx*rvec[0];
+      total_virial[jleft][1] -= fy*rvec[1];
+      total_virial[jleft][3] -= fx*rvec[1];
 
-    // Calculate jacobian on atom jright
-    calc_jacobian(DT,jright,Jac);
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+      // ~~~~~~~~~~~~~~~~ Force calculation on jright ~~~~~~~~~~~~~~~~~~~~~//
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
-    // Forces on i from current vertex
-    fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-    fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-    fnet[jright][0] += fx;
-    fnet[jright][1] += fy;
+      int jright = DT[2];
 
-    // Vector for virial (from i to j)
-    rvec[0] = x[i][0] - x[jright][0];
-    rvec[1] = x[i][1] - x[jright][1];
+      // Calculate jacobian on atom jright
+      calc_jacobian(DT,jright,Jac);
 
-    // Virial contributions
-    total_virial[jright][0] -= fx*rvec[0];
-    total_virial[jright][1] -= fy*rvec[1];
-    total_virial[jright][3] -= fx*rvec[1];
+      // Forces on i from current vertex
+      fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
+      fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
+      fnet[jright][0] += fx;
+      fnet[jright][1] += fy;
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~ Permute vertices cyclically ~~~~~~~~~~~~~~~~~~~~~//
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+      // Vector for virial (from i to j)
+      rvec[0] = x[i][0] - x[jright][0];
+      rvec[1] = x[i][1] - x[jright][1];
 
-    // vert becomes previous vert
-    vert_prev[0] = vert[0];
-    vert_prev[1] = vert[1];
-
-    // Next vert becomes vert
-    vert[0] = vert_next[0];
-    vert[1] = vert_next[1];
-
-    // Second entry of DT becomes jright
-    DT[1] = jright;
-
-    // Loop through faces
-    for (int n = 1; n < num_faces; n++) {
-
-        // Only need to find the index of the n+2 face
-        int jnext;
-        if (n + 2 == num_faces) {
-
-            jtmp = atom->map(dtf[i][0]);
-            if (jtmp < 0) {
-                error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-            }
-            jnext = domain->closest_image(i,jtmp);
-
-            jtmp = atom->map(dtf[i][num_faces-1]);
-            DT[2] = domain->closest_image(i,jtmp);
-        } else if (n + 1 == num_faces) {
-
-            jtmp = atom->map(dtf[i][1]);
-            if (jtmp < 0) {
-                error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-            }
-            jnext = domain->closest_image(i,jtmp);
-
-            jtmp = atom->map(dtf[i][0]);
-            DT[2] = domain->closest_image(i,jtmp);
-        } else {
-
-            jtmp = atom->map(dtf[i][n+2]);
-            if (jtmp < 0) {
-                error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-            }
-            jnext = domain->closest_image(i,jtmp);
-
-            jtmp = atom->map(dtf[i][n+1]);
-            DT[2] = domain->closest_image(i,jtmp);
-        }
-
-        // Find circumcenter of next vertex
-        x2 = x[jnext][0];
-        y2 = x[jnext][1];
-        xn[0] = x0; xn[1] = x1; xn[2] = x2;
-        yn[0] = y0; yn[1] = y1; yn[2] = y2;
-        calc_cc(xn, yn, vert_next);
-        x1 = x2;
-        y1 = y2;
-
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~ Force calculation on cell i ~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-        // rnu_diff is inverted due to cross product with outward normal
-        rnu_diff[0] = vert_next[1] - vert_prev[1];
-        rnu_diff[1] = -(vert_next[0] - vert_prev[0]);
-
-        // Calculate jacobian on atom i (cell owner)
-        calc_jacobian(DT,i,Jac);
-
-        // Forces on i from current vertex
-        fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-        fnet[i][0] += fx;
-        fnet[i][1] += fy;
-
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~ Force calculation on jleft ~~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-        jleft = DT[1];
-
-        // Calculate jacobian on atom jleft
-        calc_jacobian(DT,jleft,Jac);
-
-        // Forces on i from current vertex
-        fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-        fnet[jleft][0] += fx;
-        fnet[jleft][1] += fy;
-
-        // Vector for virial (from i to j)
-        rvec[0] = x[i][0] - x[jleft][0];
-        rvec[1] = x[i][1] - x[jleft][1];
-
-        // Virial contributions
-        total_virial[jleft][0] -= fx*rvec[0];
-        total_virial[jleft][1] -= fy*rvec[1];
-        total_virial[jleft][3] -= fx*rvec[1];
-
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~ Force calculation on jright ~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-        jright = DT[2];
-
-        // Calculate jacobian on atom jleft
-        calc_jacobian(DT,jright,Jac);
-
-        // Forces on i from current vertex
-        fx = -0.5*pressure*(Jac[0]*rnu_diff[0] + Jac[3]*rnu_diff[1]);
-        fy = -0.5*pressure*(Jac[2]*rnu_diff[0] + Jac[1]*rnu_diff[1]);
-        fnet[jright][0] += fx;
-        fnet[jright][1] += fy;
-
-        // Vector for virial (from i to j)
-        rvec[0] = x[i][0] - x[jright][0];
-        rvec[1] = x[i][1] - x[jright][1];
-
-        // Virial contributions
-        total_virial[jright][0] -= fx*rvec[0];
-        total_virial[jright][1] -= fy*rvec[1];
-        total_virial[jright][3] -= fx*rvec[1];
-
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~ Permute vertices cyclically ~~~~~~~~~~~~~~~~~~~~~//
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-        // vert becomes previous vert
-        vert_prev[0] = vert[0];
-        vert_prev[1] = vert[1];
-
-        // Next vert becomes vert
-        vert[0] = vert_next[0];
-        vert[1] = vert_next[1];
-
-        // Second entry of DT becomes jright
-        DT[1] = jright;
+      // Virial contributions
+      total_virial[jright][0] -= fx*rvec[0];
+      total_virial[jright][1] -= fy*rvec[1];
+      total_virial[jright][3] -= fx*rvec[1];
 
     }
   }
-
-  // int ifail_all = 0;
-  // MPI_Allreduce(&ifail, &ifail_all, 1, MPI_INT, MPI_MAX, world);
-  // if (ifail_all == 1 && me == 0) {
-  //   // output->write_dump(update->ntimestep);
-  //   // error->one(FLERR,"Fix volume/voronoi calculated negative or zero volume");
-  // }
 
   // Reverse communication of force and virial contributions
   comm->reverse_comm(this,8);
@@ -981,8 +812,8 @@ int FixVolumeVoronoi::check_edges(tagint *edge_tags)
         double e2 = (x[j_ind2][0] - x[j_ind3][0])*(x[j_ind2][0] - x[j_ind3][0]) + (x[j_ind2][1] - x[j_ind3][1])*(x[j_ind2][1] - x[j_ind3][1]);
 
         // External angles
-        double costh1 = (b2 + c2 - a2)/(pow(b2,0.5)*pow(c2,0.5));
-        double costh2 = (d2 + e2 - a2)/(pow(d2,0.5)*pow(e2,0.5));
+        double costh1 = (b2 + c2 - a2)/(sqrt(b2)*sqrt(c2));
+        double costh2 = (d2 + e2 - a2)/(sqrt(d2)*sqrt(e2));
 
         // Flip if costh1 + costh2 < 0
         if (costh1 + costh2 < 0.0) {
@@ -1362,7 +1193,6 @@ double FixVolumeVoronoi::calc_area(tagint *tag_vec, int icell, int num_faces){
 
     // Store circumcenter
     calc_cc(xn, yn, vert[n]);
-
   }
 
   double Area = 0.0;
@@ -1379,7 +1209,6 @@ double FixVolumeVoronoi::calc_area(tagint *tag_vec, int icell, int num_faces){
 
     // Sum the area contribution
     Area += 0.5*(vert[mu1][0]*vert[mu2][1] - vert[mu1][1]*vert[mu2][0]);
-
   }
 
   if (Area <= 0.0) {

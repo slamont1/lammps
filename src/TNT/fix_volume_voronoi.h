@@ -71,6 +71,9 @@ class FixVolumeVoronoi : public Fix {
   int eflag;
   double evoro, evoro_all;
 
+  // For checking atom count
+  int natoms_ref;
+
   // For fluid bulk resistance
   int flag_fluid;
   double eps_a, Nkuhn;
@@ -88,6 +91,9 @@ class FixVolumeVoronoi : public Fix {
   // For keeping track of invoking DT creation
   int countflag;
 
+  // For building dtf array
+  void build_dtf();
+
   // For cyclically arranging a set of points
   void arrange_cyclic(tagint *, int);
 
@@ -102,9 +108,6 @@ class FixVolumeVoronoi : public Fix {
 
   // For calculating the jacobian
   void calc_jacobian(int *, int, double *);
-
-  // For calculating cell volumes
-  double calc_area(int *, int, int);
 
   // For calculating maximum area
   double calc_amax(double, double);

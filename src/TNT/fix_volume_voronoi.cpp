@@ -146,6 +146,13 @@ FixVolumeVoronoi::FixVolumeVoronoi(LAMMPS *lmp, int narg, char **arg) :
   total_virial = nullptr;
   fnet = nullptr;
 
+  // Initialize number of atoms
+  natoms_ref = atom->natoms;
+
+  // Create memory allocations
+  memory->create(total_virial,nmax,6,"fix_volume_voronoi:total_virial");
+  memory->create(fnet,nmax,2,"fix_volume_voronoi:fnet");
+
   // Specify attributes for dumping connectivity (dtf)
   peratom_flag = 1;
   size_peratom_cols = max_faces+3;
@@ -258,75 +265,7 @@ void FixVolumeVoronoi::setup(int vflag)
   }
   countflag = 1;
 
-  // Ensure that computes have been invoked
-  modify->clearstep_compute();
-  vcompute = modify->get_compute_by_id(id_compute_voronoi);
-  if (!(vcompute->invoked_flag & Compute::INVOKED_PERATOM)) {
-    vcompute->compute_peratom();
-    vcompute->invoked_flag |= Compute::INVOKED_PERATOM;
-  }
-
-  // Proc info
-  int *mask = atom->mask;
-  int nlocal = atom->nlocal;
-  int nghost = atom->nghost;
-  int nall = nlocal + nghost;
-
-  // Pointer to dtf
-  tagint **dtf = atom->iarray[index];
-
-  // Initialize entries to 0
-  for (int i = 0; i < nall; i++) {
-    for (int m = 0; m < max_faces; m++) {
-      if (mask[i] & groupbit) {
-        dtf[i][m] = 0;
-      }
-    }
-  }
-
-  // Determine the number of rows in the local array for voronoi data
-  int numRows = vcompute->size_local_rows;
-
-  // Loop through numRows and fill dtf
-  for (int n = 0; n < numRows; n++) {
-
-    // Skip external faces (box boundaries) and empty cells
-    if (vcompute->array_local[n][1] == 0.0) continue;
-
-    // Atom that owns this cell
-    int i = atom->map(vcompute->array_local[n][0]);
-    if (i < 0)
-      error->one(FLERR,"Fix volume/voronoi can't find local atom");
-
-    // Atom that shares this cell edge
-    int j = atom->map(vcompute->array_local[n][1]);
-    if (j < 0) {
-      error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
-    }
-    tagint tagj = atom->tag[j];
-    if (tagj == atom->tag[i]) error->one(FLERR,"Atom edge with itself");
-
-    // Find next empty space for atom i and fill it with tagj
-    for (int m = 0; m < max_faces; m++) {
-        if (dtf[i][m] == 0) {
-            dtf[i][m] = tagj;
-            break;
-        }
-    }
-  }
-
-  // Confirm cyclic permutation of dtf
-  for (int i = 0; i < nlocal; i++) {
-    arrange_cyclic(dtf[i],i);
-  }
-
-  // Communicate dtf
-  comm->forward_comm(this,max_faces);
-    
-  // Create memory allocations
-  nmax = atom->nmax;
-  memory->create(total_virial,nmax,6,"fix_volume_voronoi:total_virial");
-  memory->create(fnet,nmax,2,"fix_volume_voronoi:fnet");
+  build_dtf();
 
   // Run single timestep
   pre_force(vflag);
@@ -365,8 +304,14 @@ void FixVolumeVoronoi::pre_force(int vflag)
   eflag = 0;
   evoro = 0.0;
 
-  // Atom counts
+  // Check for changes in atom count
   int natoms = atom->natoms;
+  if (natoms != natoms_ref) {
+    build_dtf();
+    natoms_ref = natoms;
+  }
+
+  // Atom counts
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
   int nall = nlocal + nghost;
@@ -729,6 +674,78 @@ void FixVolumeVoronoi::post_force(int vflag)
 
 /*------------------------------------------------------------------------*/
 
+void FixVolumeVoronoi::build_dtf()
+{
+
+  // Ensure that computes have been invoked
+  modify->clearstep_compute();
+  vcompute = modify->get_compute_by_id(id_compute_voronoi);
+  if (!(vcompute->invoked_flag & Compute::INVOKED_PERATOM)) {
+    vcompute->compute_peratom();
+    vcompute->invoked_flag |= Compute::INVOKED_PERATOM;
+  }
+
+  // Proc info
+  int *mask = atom->mask;
+  int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
+  int nall = nlocal + nghost;
+
+  // Pointer to dtf
+  tagint **dtf = atom->iarray[index];
+
+  // Initialize entries to 0
+  for (int i = 0; i < nall; i++) {
+    for (int m = 0; m < max_faces; m++) {
+      if (mask[i] & groupbit) {
+        dtf[i][m] = 0;
+      }
+    }
+  }
+
+  // Determine the number of rows in the local array for voronoi data
+  int numRows = vcompute->size_local_rows;
+
+  // Loop through numRows and fill dtf
+  for (int n = 0; n < numRows; n++) {
+
+    // Skip external faces (box boundaries) and empty cells
+    if (vcompute->array_local[n][1] == 0.0) continue;
+
+    // Atom that owns this cell
+    int i = atom->map(vcompute->array_local[n][0]);
+    if (i < 0)
+      error->one(FLERR,"Fix volume/voronoi can't find local atom");
+
+    // Atom that shares this cell edge
+    int j = atom->map(vcompute->array_local[n][1]);
+    if (j < 0) {
+      error->one(FLERR,"Fix volume/voronoi needs ghost atoms from further away");
+    }
+    tagint tagj = atom->tag[j];
+    if (tagj == atom->tag[i]) error->one(FLERR,"Atom edge with itself");
+
+    // Find next empty space for atom i and fill it with tagj
+    for (int m = 0; m < max_faces; m++) {
+        if (dtf[i][m] == 0) {
+            dtf[i][m] = tagj;
+            break;
+        }
+    }
+  }
+
+  // Confirm cyclic permutation of dtf
+  for (int i = 0; i < nlocal; i++) {
+    arrange_cyclic(dtf[i],i);
+  }
+
+  // Communicate dtf
+  comm->forward_comm(this,max_faces);
+
+}
+
+/*------------------------------------------------------------------------*/
+
 int FixVolumeVoronoi::check_edges(tagint *edge_tags)
 {
 
@@ -736,7 +753,6 @@ int FixVolumeVoronoi::check_edges(tagint *edge_tags)
   int *mask = atom->mask;
   tagint *tag = atom->tag;
 
-  int natoms = atom->natoms;
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
   int nall = nlocal + nghost;
@@ -843,7 +859,6 @@ void FixVolumeVoronoi::flip_edge(tagint *edge_tags)
   if (edge_tags[0] == 0) return;
 
   // Initialize pointers and needed values
-  int natoms = atom->natoms;
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
   int nall = nlocal + nghost;
@@ -1156,86 +1171,6 @@ void FixVolumeVoronoi::calc_jacobian(int *DT, int p, double *Jac){
       printf("\n Warning: Non-finite Jacobian \n");
     }
   }
-
-}
-
-/*------------------------------------------------------------------------*/
-
-double FixVolumeVoronoi::calc_area(tagint *tag_vec, int icell, int num_faces){
-
-  // Pointer to atom positions
-  double **x = atom->x;
-
-  // Coordinates of the vertices
-  double vert[num_faces][2];
-
-  // Find coordinates of each vertex
-  for (int n = 0; n < num_faces; n++) {
-
-    // Indices of current triangulation
-    int nu1 = n;
-    int nu2 = n+1;
-
-    // Wrap back to first vertex for final term
-    if (nu2 == num_faces) {
-        nu2 = 0;
-    }
-
-    // local id of nu1
-    int j_nu1 = domain->closest_image(icell,atom->map(tag_vec[nu1]));
-
-    // local id of nu2
-    int j_nu2 = domain->closest_image(icell,atom->map(tag_vec[nu2]));
-
-    // Coordinates of current triangulation
-    double xn[3] = {x[icell][0],x[j_nu1][0],x[j_nu2][0]};
-    double yn[3] = {x[icell][1],x[j_nu1][1],x[j_nu2][1]};
-
-    // Store circumcenter
-    calc_cc(xn, yn, vert[n]);
-  }
-
-  double Area = 0.0;
-  for (int n = 0; n < num_faces; n++) {
-
-    // Indices of current and next vertex
-    int mu1 = n;
-    int mu2 = n+1;
-
-    // Wrap back to first vertex for final term
-    if (mu2 == num_faces) {
-        mu2 = 0;
-    }
-
-    // Sum the area contribution
-    Area += 0.5*(vert[mu1][0]*vert[mu2][1] - vert[mu1][1]*vert[mu2][0]);
-  }
-
-  if (Area <= 0.0) {
-    // Print info on icell
-    printf("\nproc %d: atom %d at loc: (%f,%f)\n",me,atom->tag[icell],x[icell][0],x[icell][1]);
-
-    // Print connected tags
-    printf("Voro tags: ");
-    for (int n = 0; n < max_faces; n++) {
-      printf("%d ",tag_vec[n]);
-    }
-
-    // Print voronoi neighbors
-    printf("\nVoro coords: ");
-    for (int n = 0; n < num_faces; n++) {
-      int j = domain->closest_image(icell,atom->map(tag_vec[n]));
-      printf("(%f,%f) ",x[j][0],x[j][1]);
-    }
-
-    printf("\nVertex coords: ");
-    for (int n = 0; n < num_faces; n++) {
-      printf("(%f,%f) ",vert[n][0],vert[n][1]);
-    }
-    printf("\n");
-  }
-
-  return Area;
 
 }
 
